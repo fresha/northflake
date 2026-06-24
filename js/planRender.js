@@ -201,10 +201,9 @@ function buildEdges(profile, positions) {
 
       // Label every edge with a known volume, including 0 — an explicit "0"
       // (e.g. a Filter dropping every row → an empty branch) is more
-      // informative than a blank edge. Zeros get a neutral colour so they read
-      // as "empty" and stay distinct from the real volumes, but stay legible.
+      // informative than a blank edge.
       if (rows != null) {
-        labels.push({ x: (sx + ex) / 2, y: (sy + ey) / 2, text: formatRows(rows), from: puid, to: op.uid, zero: rows === 0 });
+        labels.push({ x: (sx + ex) / 2, y: (sy + ey) / 2, text: formatRows(rows), from: puid, to: op.uid });
       }
     }
   }
@@ -218,7 +217,6 @@ function buildEdges(profile, positions) {
     rect.setAttribute('height', 18);
     rect.setAttribute('rx', 4);
     rect.classList.add('plan-edge-label-bg');
-    if (lb.zero) rect.classList.add('is-zero');
     rect.dataset.edgeLabel = `${lb.from}-${lb.to}`;
 
     const text = document.createElementNS(SVG_NS, 'text');
@@ -226,7 +224,6 @@ function buildEdges(profile, positions) {
     text.setAttribute('y', lb.y + 4);
     text.setAttribute('text-anchor', 'middle');
     text.classList.add('plan-edge-label');
-    if (lb.zero) text.classList.add('is-zero');
     text.dataset.edgeLabel = `${lb.from}-${lb.to}`;
     text.textContent = lb.text;
 

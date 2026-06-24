@@ -655,8 +655,6 @@ main {
   font-size: 10px;
   font-weight: 600;
 }
-/* zero-row edges: neutral colour — reads as "empty branch", stays legible */
-.plan-edge-label.is-zero { fill: var(--text-secondary); }
 
 /* node */
 .plan-node {
