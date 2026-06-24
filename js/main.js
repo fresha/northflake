@@ -2,22 +2,42 @@
 import { initTheme } from './theme.js';
 import { parseProfile } from './profileParser.js';
 import { renderOverview } from './overviewRender.js';
+import { renderScans } from './scansRender.js';
 import { renderOperators } from './operatorsRender.js';
 
 let currentProfile = null;
 
+function showError(message) {
+  const zone = document.getElementById('dropZone');
+  let banner = document.getElementById('loadError');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'loadError';
+    banner.className = 'load-error';
+    zone.parentElement.insertBefore(banner, zone.nextSibling);
+  }
+  banner.textContent = `⚠️ ${message}`;
+}
+
 function loadCSVText(text) {
+  let profile;
   try {
-    currentProfile = parseProfile(text);
+    profile = parseProfile(text);
   } catch (err) {
-    alert(`Could not parse profile:\n${err.message}`);
+    showError(`Could not parse profile: ${err.message}`);
     return;
   }
+  currentProfile = profile;
+  document.getElementById('loadError')?.remove();
   // Reveal dashboards, hide drop zone
   document.getElementById('dropZone').style.display = 'none';
   const overviewDash = document.getElementById('overviewDashboard');
   overviewDash.classList.add('visible');
   renderOverview(currentProfile, overviewDash);
+
+  const scansDash = document.getElementById('scansDashboard');
+  scansDash.classList.add('visible');
+  renderScans(currentProfile, scansDash);
 
   const operatorsDash = document.getElementById('operatorsDashboard');
   operatorsDash.classList.add('visible');
@@ -37,8 +57,13 @@ function wireFileInputs() {
   const globalInput = document.getElementById('globalFileInput');
   const globalBtn = document.getElementById('globalLoadBtn');
 
-  // Click drop zone → open file picker
-  dropZone.addEventListener('click', () => dropInput.click());
+  // Click drop zone → open file picker.
+  // The input lives inside the zone, so dropInput.click() dispatches a click that
+  // bubbles back here — ignore that re-entry, else two file dialogs open.
+  dropZone.addEventListener('click', e => {
+    if (e.target === dropInput) return;
+    dropInput.click();
+  });
   dropInput.addEventListener('change', e => loadFile(e.target.files[0]));
 
   // Header "Load Profile" button
