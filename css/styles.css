@@ -681,13 +681,21 @@ main {
   border-color: var(--fam, var(--accent));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--fam, var(--accent)) 55%, transparent);
 }
-.plan-node-head { display: flex; align-items: baseline; gap: 0.4rem; }
+.plan-node-head { display: flex; align-items: center; gap: 0.4rem; }
 .plan-node-type {
+  flex: 1; min-width: 0;
   font-size: 0.74rem; font-weight: 600;
   color: var(--fam, var(--text-primary));
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.plan-node-id { font-size: 0.62rem; color: var(--text-secondary); margin-left: auto; }
+.plan-node-id { font-size: 0.62rem; color: var(--text-secondary); flex-shrink: 0; }
+
+/* insight badges (spill / poor pruning / low cache) */
+.plan-node-badges { display: inline-flex; gap: 3px; flex-shrink: 0; align-items: center; }
+.plan-badge { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.badge-spill { background: var(--danger); }
+.badge-prune { background: var(--orange); }
+.badge-cache { background: var(--warning); }
 .plan-node-metric {
   font-size: 0.68rem; color: var(--info);
   font-variant-numeric: tabular-nums;
@@ -724,19 +732,22 @@ main {
 .plan-tool-btn:hover { background: var(--hover-tint); color: var(--text-primary); }
 .plan-tool-btn.active { background: var(--accent-dim); color: var(--accent); }
 
-/* time-heat legend */
-.plan-heat-legend {
+/* legend (issues key + time-heat) */
+.plan-legend {
   position: absolute;
   left: 0.75rem; bottom: 0.75rem;
   z-index: 5;
-  display: flex; align-items: center; gap: 0.4rem;
-  padding: 0.3rem 0.55rem;
+  display: flex; flex-direction: column; gap: 0.3rem;
+  padding: 0.4rem 0.55rem;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 7px;
   font-size: 0.62rem;
   color: var(--text-secondary);
 }
+.plan-legend-issues { display: flex; flex-wrap: wrap; gap: 0.55rem; }
+.plan-legend-item { display: inline-flex; align-items: center; gap: 0.3rem; }
+.plan-legend-heat { display: flex; align-items: center; gap: 0.4rem; }
 .plan-heat-bar {
   width: 64px; height: 8px;
   border-radius: 4px;
