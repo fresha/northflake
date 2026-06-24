@@ -28,6 +28,9 @@ const ZOOM_STEP = 1.25;
 let canvasEl = null;
 let zoomEl = null;
 let detailEl = null;
+let slowestPanelEl = null;
+let slowestBtnEl = null;
+let nodePositions = null;   // uid → {x, y}, for fly-to navigation
 let camera = { x: 0, y: 0, zoom: 1 };
 let contentSize = { width: 0, height: 0 };
 let dragMoved = false;
@@ -43,6 +46,7 @@ export function renderPlan(profile, container) {
   const children = buildChildrenMap(profile);
   const { positions, width, height } = layout(profile, children);
   contentSize = { width, height };
+  nodePositions = positions;
 
   // Time-heat is normalized per step: overall_percentage in the CSV is per-step,
   // so a single-operator step (e.g. step-1 CREATE TABLE = 100%) must NOT read as hot.
@@ -59,12 +63,20 @@ export function renderPlan(profile, container) {
   }
   canvasEl.append(zoomEl);
 
-  const toolbar = buildToolbar();
+  const ranked = rankOperators(profile, heat);
+  const toolbar = buildToolbar(ranked.length > 0);
   detailEl = h('aside', 'plan-detail');
   detailEl.style.display = 'none';
+  slowestPanelEl = buildSlowestPanel(ranked);
 
-  canvasEl.append(toolbar, buildHeatLegend(), detailEl);
+  canvasEl.append(toolbar, buildHeatLegend(), slowestPanelEl, detailEl);
   container.append(canvasEl);
+
+  // Highlight the slowest operators in the tree (now that nodes are in the DOM).
+  ranked.slice(0, 5).forEach((op, i) => {
+    document.getElementById(`plan-node-${op.uid}`)
+      ?.classList.add(i === 0 ? 'slowest-top1' : 'slowest-top5');
+  });
 
   setupViewport();
   // Tab panel may be hidden at first render (0×0) — fitToView no-ops then and
@@ -371,19 +383,32 @@ function closeDetail() {
    Toolbar + viewport
    ============================================================ */
 
-function buildToolbar() {
+// Toolbar icons — same set as NorthStar's plan visualizer.
+const ICONS = {
+  zoomIn: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2z"/></svg>',
+  zoomOut: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 8a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11A.5.5 0 0 1 2 8z"/></svg>',
+  fit: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/></svg>',
+  slowest: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 11a1 1 0 1 1 2 0v4a1 1 0 1 1-2 0v-4zm6-6a1 1 0 1 1 2 0v10a1 1 0 1 1-2 0V5zM7 7a1 1 0 0 1 2 0v8a1 1 0 1 1-2 0V7zm-6 4a1 1 0 1 1 2 0v4a1 1 0 1 1-2 0v-4z"/></svg>',
+};
+
+function buildToolbar(hasSlowest) {
   const bar = h('div', 'plan-toolbar');
-  const mk = (label, title, fn) => {
-    const b = h('button', 'plan-tool-btn', [label]);
+  const mk = (icon, title, fn) => {
+    const b = htmlEl('button', 'plan-tool-btn', icon);
     b.title = title;
     b.addEventListener('click', fn);
     return b;
   };
   bar.append(
-    mk('+', 'Zoom in', () => zoomToCenter(ZOOM_STEP)),
-    mk('−', 'Zoom out', () => zoomToCenter(1 / ZOOM_STEP)),
-    mk('⤢', 'Fit to view', () => fitToView(true)),
+    mk(ICONS.zoomIn, 'Zoom in', () => zoomToCenter(ZOOM_STEP)),
+    mk(ICONS.zoomOut, 'Zoom out', () => zoomToCenter(1 / ZOOM_STEP)),
+    mk(ICONS.fit, 'Fit to view', () => fitToView(true)),
   );
+  if (hasSlowest) {
+    slowestBtnEl = mk(ICONS.slowest, 'Toggle slowest operators panel', toggleSlowest);
+    slowestBtnEl.classList.add('active'); // panel open by default
+    bar.append(slowestBtnEl);
+  }
   return bar;
 }
 
@@ -398,6 +423,88 @@ function buildHeatLegend() {
   );
   legend.title = 'Node shading: share of its plan step’s execution time';
   return legend;
+}
+
+/* ============================================================
+   Slowest operators
+   ============================================================ */
+
+/**
+ * Rank operators by execution-time share, descending. timePct is per-step, so
+ * we only rank operators whose step has ≥2 timed operators (reusing the heat
+ * context) — this drops trivial single-operator steps like step-1 CREATE TABLE
+ * that would otherwise sit at a misleading 100%.
+ */
+function rankOperators(profile, heat, limit = 10) {
+  return profile.operators
+    .filter(op => op.timePct != null && (heat.countByStep.get(op.stepId) || 0) >= 2)
+    .sort((a, b) => b.timePct - a.timePct)
+    .slice(0, limit);
+}
+
+function buildSlowestPanel(ranked) {
+  const panel = h('div', 'plan-slowest');
+  const head = h('div', 'plan-slowest-head');
+  head.append(h('span', 'plan-slowest-title', ['Slowest operators']));
+  const close = h('button', 'plan-slowest-close', ['×']);
+  close.title = 'Hide panel';
+  close.addEventListener('click', toggleSlowest);
+  head.append(close);
+  panel.append(head);
+
+  if (ranked.length === 0) {
+    panel.append(h('div', 'plan-slowest-empty', ['No timing data.']));
+    return panel;
+  }
+
+  const max = ranked[0].timePct || 1;
+  const list = h('div', 'plan-slowest-list');
+  ranked.forEach((op, i) => {
+    const row = h('div', 'plan-slowest-row');
+    const rankCls = i === 0 ? 'top1' : i < 5 ? 'top5' : '';
+    const fill = h('div', 'plan-slowest-bar-fill');
+    fill.style.width = `${Math.round((op.timePct / max) * 100)}%`;
+    const bar = h('div', 'plan-slowest-bar', [fill]);
+    const name = h('span', 'plan-slowest-name', [op.type]);
+    name.title = op.type;
+    row.append(
+      h('span', `plan-slowest-rank ${rankCls}`, [`#${i + 1}`]),
+      name,
+      h('span', 'plan-slowest-id', [`op${op.id}`]),
+      bar,
+      h('span', 'plan-slowest-pct', [formatPct(op.timePct)]),
+    );
+    row.addEventListener('click', () => zoomToNode(op.uid));
+    list.append(row);
+  });
+  panel.append(list);
+  panel.append(h('div', 'plan-slowest-note', ['% of step exec time']));
+  return panel;
+}
+
+function toggleSlowest() {
+  if (!slowestPanelEl) return;
+  const collapsed = slowestPanelEl.classList.toggle('collapsed');
+  slowestBtnEl?.classList.toggle('active', !collapsed);
+}
+
+/** Center the camera on a node and flash it briefly. */
+function zoomToNode(uid) {
+  const pos = nodePositions?.get(uid);
+  if (!pos || !canvasEl) return;
+  const rect = canvasEl.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return;
+
+  camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, 1.2));
+  camera.x = pos.x + NODE_W / 2 - rect.width / (2 * camera.zoom);
+  camera.y = pos.y + NODE_H / 2 - rect.height / (2 * camera.zoom);
+  updateTransform(true);
+
+  const el = document.getElementById(`plan-node-${uid}`);
+  if (el) {
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1600);
+  }
 }
 
 function updateTransform(smooth = false) {
@@ -457,7 +564,7 @@ function setupViewport() {
   let panning = false, startX = 0, startY = 0, camX = 0, camY = 0, pid = null;
 
   canvasEl.addEventListener('pointerdown', e => {
-    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail')) return;
+    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest')) return;
     panning = true;
     dragMoved = false;
     pid = e.pointerId;
@@ -489,7 +596,7 @@ function setupViewport() {
   // Click on empty canvas (not a drag, not a node) closes the detail panel.
   canvasEl.addEventListener('click', e => {
     if (dragMoved) return;
-    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail')) return;
+    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest')) return;
     closeDetail();
   });
 
