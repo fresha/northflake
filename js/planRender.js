@@ -60,6 +60,15 @@ let camera = { x: 0, y: 0, zoom: 1 };
 let contentSize = { width: 0, height: 0 };
 let dragMoved = false;
 
+// Filter state
+let planProfile = null;     // current profile (for selector lookups)
+let childrenMap = null;     // uid → [childUid] (for descendant lineage)
+let searchInputEl = null;
+let summaryEl = null;
+let filterHideMode = false; // dim (default) vs hide non-matches
+let searchKeyBound = false;  // bind the "/" hotkey only once
+let helpDismissBound = false; // bind the help-card outside-click only once
+
 /* ============================================================
    Public API
    ============================================================ */
@@ -72,6 +81,9 @@ export function renderPlan(profile, container) {
   const { positions, width, height } = layout(profile, children);
   contentSize = { width, height };
   nodePositions = positions;
+  planProfile = profile;
+  childrenMap = children;
+  filterHideMode = false;
 
   // Time-heat is normalized per step: overall_percentage in the CSV is per-step,
   // so a single-operator step (e.g. step-1 CREATE TABLE = 100%) must NOT read as hot.
@@ -98,7 +110,7 @@ export function renderPlan(profile, container) {
   const presentIssues = new Set();
   for (const op of profile.operators) for (const { kind } of nodeIssues(op)) presentIssues.add(kind);
 
-  canvasEl.append(toolbar, buildLegend(presentIssues), slowestPanelEl, detailEl);
+  canvasEl.append(buildSearchBar(), toolbar, buildLegend(presentIssues), slowestPanelEl, detailEl);
   container.append(canvasEl);
 
   // Highlight the slowest operators in the tree (now that nodes are in the DOM).
@@ -108,6 +120,7 @@ export function renderPlan(profile, container) {
   });
 
   setupViewport();
+  bindSearchHotkey();
   // Tab panel may be hidden at first render (0×0) — fitToView no-ops then and
   // refreshPlanView() re-fits once the tab is shown.
   requestAnimationFrame(() => requestAnimationFrame(() => fitToView(false)));
@@ -258,14 +271,16 @@ function buildEdges(profile, positions) {
     rect.setAttribute('height', 18);
     rect.setAttribute('rx', 4);
     rect.classList.add('plan-edge-label-bg');
-    rect.dataset.edgeLabel = `${lb.from}-${lb.to}`;
+    rect.dataset.from = lb.from;
+    rect.dataset.to = lb.to;
 
     const text = document.createElementNS(SVG_NS, 'text');
     text.setAttribute('x', lb.x);
     text.setAttribute('y', lb.y + 4);
     text.setAttribute('text-anchor', 'middle');
     text.classList.add('plan-edge-label');
-    text.dataset.edgeLabel = `${lb.from}-${lb.to}`;
+    text.dataset.from = lb.from;
+    text.dataset.to = lb.to;
     text.textContent = lb.text;
 
     svg.append(rect, text);
@@ -334,9 +349,9 @@ function buildNode(op, pos, heat) {
   head.append(h('span', 'plan-node-id', [`op${op.id}`]));
   node.append(head);
 
-  const metric = nodeMetric(op);
-  if (metric) node.append(h('div', 'plan-node-metric', [metric]));
-
+  // No in-node row counts: the edge labels already carry every operator's
+  // input (incoming edge) and output (outgoing edge), so "X → Y" in the node is
+  // redundant — and for multi-input ops (joins) a summed input is misleading.
   if (op.timePct != null && op.timePct > 0) {
     node.append(h('span', 'plan-node-time', [formatPct(op.timePct)]));
   }
@@ -346,19 +361,6 @@ function buildNode(op, pos, heat) {
     openDetail(op, node);
   });
   return node;
-}
-
-/**
- * In-node rows are shown ONLY when the operator changes cardinality — i.e. the
- * formatted input and output differ. Pass-throughs (e.g. "17 → 17") and
- * single-value / zero cases are redundant with the edge labels (which already
- * show what flows in below and out above), so we omit them to keep nodes clean.
- */
-function nodeMetric(op) {
-  if (op.inputRows == null || op.outputRows == null) return null;
-  const inRows = formatRows(op.inputRows);
-  const outRows = formatRows(op.outputRows);
-  return inRows === outRows ? null : `${inRows} → ${outRows}`;
 }
 
 /* ============================================================
@@ -416,6 +418,270 @@ function openDetail(op, node) {
 function closeDetail() {
   if (detailEl) detailEl.style.display = 'none';
   document.querySelectorAll('.plan-node.selected').forEach(n => n.classList.remove('selected'));
+}
+
+/* ============================================================
+   Search / filter
+   ============================================================ */
+
+function buildSearchBar() {
+  const bar = h('div', 'plan-search');
+  searchInputEl = document.createElement('input');
+  searchInputEl.type = 'text';
+  searchInputEl.className = 'plan-search-input';
+  searchInputEl.placeholder = 'filter nodes…';
+  searchInputEl.autocomplete = 'off';
+  searchInputEl.spellcheck = false;
+
+  const modeBtn = h('button', 'plan-search-mode', ['dim']);
+  modeBtn.title = 'Toggle dim / hide for non-matching nodes';
+  const clearBtn = h('button', 'plan-search-clear', ['×']);
+  clearBtn.title = 'Clear (Esc)';
+  summaryEl = h('span', 'plan-search-summary');
+  summaryEl.style.display = 'none';
+
+  const apply = () => {
+    const q = searchInputEl.value.trim();
+    if (!q) { clearFilter(); return; }
+    const matched = applyFilter(filterHideMode ? `${q} --hide` : q);
+    if (matched && matched.size) fitToNodes(matched);
+  };
+
+  searchInputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); apply(); searchInputEl.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); clearFilter(); searchInputEl.blur(); }
+  });
+  modeBtn.addEventListener('click', () => {
+    filterHideMode = !filterHideMode;
+    modeBtn.textContent = filterHideMode ? 'hide' : 'dim';
+    modeBtn.classList.toggle('active', filterHideMode);
+    if (searchInputEl.value.trim()) apply();
+  });
+  clearBtn.addEventListener('click', () => clearFilter());
+
+  bar.append(buildSearchHelp(), searchInputEl, clearBtn, modeBtn, summaryEl);
+  bindHelpDismiss();
+  return bar;
+}
+
+/** The "?" help affordance + a syntax card. Content matches our actual DSL. */
+function buildSearchHelp() {
+  const wrap = h('div', 'plan-search-help-wrap');
+  const btn = h('button', 'plan-search-help', ['?']);
+  btn.title = 'Filter syntax';
+
+  const card = h('div', 'plan-search-card');
+  const section = t => h('div', 'plan-card-section', [t]);
+  const row = (code, desc) => h('div', 'plan-card-row', [
+    h('code', 'plan-card-code', [code]),
+    h('span', 'plan-card-desc', [desc]),
+  ]);
+
+  card.append(
+    section('Selectors'),
+    row('node=5', 'a single operator (by op id)'),
+    row('+node=5', 'that node + its ancestors (toward the root)'),
+    row('node=5+', 'that node + its descendants (toward the scans)'),
+    row('+node=5+', 'that node + its full lineage'),
+    row('type=scan', 'by family: scan · join · filter · aggregate · sort · set · dml — or any operator-type substring'),
+    row('table=orders', 'scans whose table name contains the text'),
+    section('Operators'),
+    row('&', 'AND — intersection (binds tighter)'),
+    row(',', 'OR — union'),
+    section('Examples'),
+    row('node=5+ & type=scan', 'scans downstream of operator 5'),
+    row('type=scan, type=join', 'every scan or join'),
+    row('+node=2 & type=filter', 'filters between op 2 and the root'),
+  );
+
+  const keys = h('div', 'plan-card-keys');
+  keys.append(
+    h('kbd', null, ['Enter']), h('span', 'plan-card-desc', ['apply']),
+    h('kbd', null, ['Esc']), h('span', 'plan-card-desc', ['clear']),
+    h('kbd', null, ['/']), h('span', 'plan-card-desc', ['focus']),
+  );
+  card.append(keys);
+  card.append(h('div', 'plan-card-note', [
+    'Matches get an accent ring and the camera fits to them; an edge shows only when both ends match. ',
+    'The dim / hide button fades vs removes the non-matching nodes.',
+  ]));
+
+  btn.addEventListener('click', e => { e.stopPropagation(); card.classList.toggle('open'); });
+  wrap.append(btn, card);
+  return wrap;
+}
+
+/** Close any open help card when clicking outside it (bound once). */
+function bindHelpDismiss() {
+  if (helpDismissBound) return;
+  helpDismissBound = true;
+  document.addEventListener('click', e => {
+    if (e.target.closest('.plan-search-help-wrap')) return;
+    document.querySelectorAll('.plan-search-card.open').forEach(c => c.classList.remove('open'));
+  });
+}
+
+/** Focus the filter input with "/" while the Plan tab is visible. */
+function bindSearchHotkey() {
+  if (searchKeyBound) return;
+  searchKeyBound = true;
+  window.addEventListener('keydown', e => {
+    if (e.key !== '/' || !searchInputEl) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (!canvasEl || !canvasEl.offsetParent) return; // tab hidden
+    e.preventDefault();
+    searchInputEl.focus();
+    searchInputEl.select();
+  });
+}
+
+/* ---- query parsing (syntax mirrors NorthStar) ---- */
+
+function parseSelector(part) {
+  let m;
+  if ((m = part.match(/^type=(.+)$/i))) return { selectorType: 'type', value: m[1].trim().toLowerCase() };
+  if ((m = part.match(/^table=(.+)$/i))) return { selectorType: 'table', value: m[1].trim().toLowerCase() };
+  if ((m = part.match(/^(\+)?node=(\d+)(\+)?$/i))) {
+    return { selectorType: 'node', nodeId: parseInt(m[2], 10), upstream: !!m[1], downstream: !!m[3] };
+  }
+  return null;
+}
+
+function parseFilterQuery(query) {
+  if (!query || !query.trim()) return { orGroups: [], hideMode: false };
+  let hideMode = false;
+  if (query.includes('--hide')) { hideMode = true; query = query.replace(/--hide/g, '').trim(); }
+
+  const orGroups = [];
+  for (const orPart of query.split(/\s*(?:,|\bor\b)\s*/i).filter(Boolean)) {
+    const group = { nodeSelectors: [], typeFilters: [], tableFilters: [] };
+    for (const part of orPart.split(/\s*(?:&|\band\b)\s*/i).filter(Boolean)) {
+      const sel = parseSelector(part.trim());
+      if (!sel) continue;
+      if (sel.selectorType === 'node') group.nodeSelectors.push(sel);
+      else if (sel.selectorType === 'type') group.typeFilters.push(sel.value);
+      else group.tableFilters.push(sel.value);
+    }
+    if (group.nodeSelectors.length || group.typeFilters.length || group.tableFilters.length) orGroups.push(group);
+  }
+  return { orGroups, hideMode };
+}
+
+/* ---- lineage + selector resolution ---- */
+
+function ancestors(uid, acc = new Set()) {
+  const op = planProfile.byId.get(uid);
+  if (op) for (const p of op.parentUids) if (!acc.has(p)) { acc.add(p); ancestors(p, acc); }
+  return acc;
+}
+function descendants(uid, acc = new Set()) {
+  for (const c of childrenMap.get(uid) || []) if (!acc.has(c)) { acc.add(c); descendants(c, acc); }
+  return acc;
+}
+
+function nodesForSelector(sel) {
+  const set = new Set();
+  for (const op of planProfile.operators) {
+    if (op.id !== sel.nodeId) continue;
+    set.add(op.uid);
+    if (sel.upstream) for (const a of ancestors(op.uid)) set.add(a);
+    if (sel.downstream) for (const d of descendants(op.uid)) set.add(d);
+  }
+  return set;
+}
+function nodesForType(value) {
+  const set = new Set();
+  for (const op of planProfile.operators) {
+    if (familyOf(op.type) === value || op.type.toLowerCase().includes(value)) set.add(op.uid);
+  }
+  return set;
+}
+function nodesForTable(value) {
+  const set = new Set();
+  for (const op of planProfile.operators) {
+    const t = op.attributes?.table_name;
+    if (t && String(t).toLowerCase().includes(value)) set.add(op.uid);
+  }
+  return set;
+}
+function intersect(a, b) {
+  const out = new Set();
+  for (const x of a) if (b.has(x)) out.add(x);
+  return out;
+}
+
+/* ---- apply / clear ---- */
+
+function applyFilter(query) {
+  if (!planProfile || !canvasEl) return null;
+  const spec = parseFilterQuery(query);
+  if (spec.orGroups.length === 0) { resetFilterVisuals(); updateFilterSummary(null); return null; }
+
+  const matched = new Set();
+  for (const g of spec.orGroups) {
+    let groupSet = null;
+    const consider = s => { groupSet = groupSet === null ? s : intersect(groupSet, s); };
+    for (const sel of g.nodeSelectors) consider(nodesForSelector(sel));
+    for (const t of g.typeFilters) consider(nodesForType(t));
+    for (const tb of g.tableFilters) consider(nodesForTable(tb));
+    if (groupSet) for (const u of groupSet) matched.add(u);
+  }
+
+  const dimCls = spec.hideMode ? 'filter-hidden' : 'filter-dimmed';
+  for (const op of planProfile.operators) {
+    const el = document.getElementById(`plan-node-${op.uid}`);
+    if (!el) continue;
+    el.classList.remove('filter-dimmed', 'filter-hidden', 'filter-match');
+    el.classList.add(matched.has(op.uid) ? 'filter-match' : dimCls);
+  }
+  // An edge/label is kept only when BOTH endpoints match.
+  canvasEl.querySelectorAll('.plan-edge, .plan-edge-label, .plan-edge-label-bg').forEach(el => {
+    el.classList.remove('filter-dimmed', 'filter-hidden');
+    if (!(matched.has(el.dataset.from) && matched.has(el.dataset.to))) el.classList.add(dimCls);
+  });
+
+  updateFilterSummary(matched);
+  return matched;
+}
+
+function resetFilterVisuals() {
+  canvasEl?.querySelectorAll('.plan-node').forEach(n => n.classList.remove('filter-dimmed', 'filter-hidden', 'filter-match'));
+  canvasEl?.querySelectorAll('.plan-edge, .plan-edge-label, .plan-edge-label-bg')
+    .forEach(el => el.classList.remove('filter-dimmed', 'filter-hidden'));
+}
+
+function clearFilter() {
+  resetFilterVisuals();
+  updateFilterSummary(null);
+  if (searchInputEl) searchInputEl.value = '';
+}
+
+function updateFilterSummary(matched) {
+  if (!summaryEl) return;
+  if (!matched || matched.size === 0) { summaryEl.style.display = 'none'; return; }
+  summaryEl.textContent = `${matched.size} node${matched.size !== 1 ? 's' : ''}`;
+  summaryEl.style.display = '';
+}
+
+/** Fit the camera to a set of nodes (used to zoom to filter matches). */
+function fitToNodes(uids) {
+  if (!canvasEl || !uids || !uids.size) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const u of uids) {
+    const p = nodePositions.get(u);
+    if (!p) continue;
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + NODE_H);
+  }
+  if (minX === Infinity) return;
+  const rect = canvasEl.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const cw = maxX - minX, ch = maxY - minY, pad = 60;
+  const scale = Math.min((rect.width - pad * 2) / cw, (rect.height - pad * 2) / ch, 2);
+  camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+  camera.x = (minX + cw / 2) - (rect.width / camera.zoom) / 2;
+  camera.y = (minY + ch / 2) - (rect.height / camera.zoom) / 2;
+  updateTransform(true);
 }
 
 /* ============================================================
@@ -621,7 +887,7 @@ function setupViewport() {
   let panning = false, startX = 0, startY = 0, camX = 0, camY = 0, pid = null;
 
   canvasEl.addEventListener('pointerdown', e => {
-    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest')) return;
+    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search')) return;
     panning = true;
     dragMoved = false;
     pid = e.pointerId;
@@ -653,7 +919,7 @@ function setupViewport() {
   // Click on empty canvas (not a drag, not a node) closes the detail panel.
   canvasEl.addEventListener('click', e => {
     if (dragMoved) return;
-    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest')) return;
+    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search')) return;
     closeDetail();
   });
 
