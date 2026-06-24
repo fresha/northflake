@@ -640,7 +640,20 @@ main {
 .plan-edge {
   fill: none;
   stroke: var(--border);
-  stroke-width: 1.5;
+  stroke-width: 1.5;       /* default; JS overrides per row volume */
+  stroke-linecap: round;
+}
+/* edge data-flow labels (row counts) */
+.plan-edge-label-bg {
+  fill: var(--bg-secondary);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.plan-edge-label {
+  fill: var(--info);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
 }
 
 /* node */
@@ -657,7 +670,7 @@ main {
   border-radius: 7px;
   cursor: pointer;
   overflow: hidden;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease, background 0.12s ease;
 }
 .plan-node:hover {
   transform: translateY(-1px);
@@ -704,6 +717,33 @@ main {
   cursor: pointer;
 }
 .plan-tool-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* time-heat legend */
+.plan-heat-legend {
+  position: absolute;
+  left: 0.75rem; bottom: 0.75rem;
+  z-index: 5;
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.3rem 0.55rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+}
+.plan-heat-bar {
+  width: 64px; height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(to right, var(--bg-primary), color-mix(in srgb, var(--danger) 45%, var(--bg-primary)));
+  border: 1px solid var(--border);
+}
+.plan-heat-label { text-transform: uppercase; letter-spacing: 0.04em; }
+.plan-heat-caption {
+  margin-left: 0.35rem;
+  padding-left: 0.45rem;
+  border-left: 1px solid var(--border);
+  color: var(--text-secondary);
+}
 
 /* detail panel */
 .plan-detail {

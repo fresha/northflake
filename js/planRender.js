@@ -44,6 +44,10 @@ export function renderPlan(profile, container) {
   const { positions, width, height } = layout(profile, children);
   contentSize = { width, height };
 
+  // Time-heat is normalized per step: overall_percentage in the CSV is per-step,
+  // so a single-operator step (e.g. step-1 CREATE TABLE = 100%) must NOT read as hot.
+  const heat = buildHeatContext(profile);
+
   // DOM scaffold: canvas → zoom-container → (svg edges + node divs)
   canvasEl = h('div', 'plan-canvas');
   zoomEl = h('div', 'zoom-container');
@@ -51,7 +55,7 @@ export function renderPlan(profile, container) {
   zoomEl.append(svg);
   for (const op of profile.operators) {
     const pos = positions.get(op.uid);
-    if (pos) zoomEl.append(buildNode(op, pos));
+    if (pos) zoomEl.append(buildNode(op, pos, heat));
   }
   canvasEl.append(zoomEl);
 
@@ -59,7 +63,7 @@ export function renderPlan(profile, container) {
   detailEl = h('aside', 'plan-detail');
   detailEl.style.display = 'none';
 
-  canvasEl.append(toolbar, detailEl);
+  canvasEl.append(toolbar, buildHeatLegend(), detailEl);
   container.append(canvasEl);
 
   setupViewport();
@@ -170,10 +174,17 @@ function buildEdges(profile, positions) {
   svg.setAttribute('width', contentSize.width);
   svg.setAttribute('height', contentSize.height);
 
+  // Two passes so labels always sit above every edge.
+  const labels = [];
+
   for (const op of profile.operators) {
     const from = positions.get(op.uid);
     if (!from) continue;
-    // op.parentUids point UP — draw an edge from each parent's bottom to this node's top.
+    // Data flows from this node UP to its parent(s); the edge carries this
+    // node's output rows. Width scales with that volume (log10).
+    const rows = op.outputRows;
+    const width = edgeWidth(rows);
+
     for (const puid of op.parentUids) {
       const to = positions.get(puid);
       if (!to) continue;
@@ -182,14 +193,77 @@ function buildEdges(profile, positions) {
       const dy = (ey - sy) * 0.45;
       const path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('d', `M ${sx} ${sy} C ${sx} ${sy + dy}, ${ex} ${ey - dy}, ${ex} ${ey}`);
+      path.setAttribute('stroke-width', width.toFixed(1));
       path.classList.add('plan-edge');
+      path.dataset.from = puid;          // forward-compat for the filter slice
+      path.dataset.to = op.uid;
       svg.append(path);
+
+      // Label every edge with a known volume, including 0 — an explicit "0"
+      // (e.g. a Filter dropping every row → an empty branch) is more
+      // informative than a blank edge.
+      if (rows != null) {
+        labels.push({ x: (sx + ex) / 2, y: (sy + ey) / 2, text: formatRows(rows), from: puid, to: op.uid });
+      }
     }
   }
+
+  for (const lb of labels) {
+    const w = lb.text.length * 7 + 12;
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', lb.x - w / 2);
+    rect.setAttribute('y', lb.y - 9);
+    rect.setAttribute('width', w);
+    rect.setAttribute('height', 18);
+    rect.setAttribute('rx', 4);
+    rect.classList.add('plan-edge-label-bg');
+    rect.dataset.edgeLabel = `${lb.from}-${lb.to}`;
+
+    const text = document.createElementNS(SVG_NS, 'text');
+    text.setAttribute('x', lb.x);
+    text.setAttribute('y', lb.y + 4);
+    text.setAttribute('text-anchor', 'middle');
+    text.classList.add('plan-edge-label');
+    text.dataset.edgeLabel = `${lb.from}-${lb.to}`;
+    text.textContent = lb.text;
+
+    svg.append(rect, text);
+  }
+
   return svg;
 }
 
-function buildNode(op, pos) {
+/** Edge stroke width from row volume — log10 scale (ported from NorthStar). */
+function edgeWidth(rows) {
+  const MIN = 1.5, MAX = 8;
+  if (!rows || rows <= 0) return MIN;
+  const normalized = Math.min(Math.log10(Math.max(1, rows)) / 7, 1); // 1 row→0 … 10M→1
+  return MIN + (MAX - MIN) * normalized;
+}
+
+/**
+ * Per-step time-heat context: the max timePct within each step, and how many
+ * operators that step has. Heat is meaningful only when a step has ≥2 timed ops.
+ */
+function buildHeatContext(profile) {
+  const maxByStep = new Map();
+  const countByStep = new Map();
+  for (const op of profile.operators) {
+    if (op.timePct == null) continue;
+    countByStep.set(op.stepId, (countByStep.get(op.stepId) || 0) + 1);
+    maxByStep.set(op.stepId, Math.max(maxByStep.get(op.stepId) || 0, op.timePct));
+  }
+  return { maxByStep, countByStep };
+}
+
+/** 0..1 heat for a node, or 0 when its step isn't meaningfully heat-able. */
+function heatOf(op, heat) {
+  if (op.timePct == null || (heat.countByStep.get(op.stepId) || 0) < 2) return 0;
+  const max = heat.maxByStep.get(op.stepId) || 0;
+  return max > 0 ? op.timePct / max : 0;
+}
+
+function buildNode(op, pos, heat) {
   const fam = familyOf(op.type);
   const node = h('div', `plan-node fam-${fam}`);
   node.id = `plan-node-${op.uid}`;
@@ -197,6 +271,12 @@ function buildNode(op, pos) {
   node.style.top = `${pos.y}px`;
   node.style.width = `${NODE_W}px`;
   node.style.height = `${NODE_H}px`;
+
+  // Time-heat tint: warmer = larger share of its step's time.
+  const heatVal = heatOf(op, heat);
+  if (heatVal > 0) {
+    node.style.background = `color-mix(in srgb, var(--danger) ${Math.round(heatVal * 45)}%, var(--bg-primary))`;
+  }
 
   const head = h('div', 'plan-node-head');
   head.append(h('span', 'plan-node-type', [op.type]));
@@ -217,15 +297,17 @@ function buildNode(op, pos) {
   return node;
 }
 
-/** One headline metric for the compact node: rows flow, else output/input rows. */
+/**
+ * In-node rows are shown ONLY when the operator changes cardinality — i.e. the
+ * formatted input and output differ. Pass-throughs (e.g. "17 → 17") and
+ * single-value / zero cases are redundant with the edge labels (which already
+ * show what flows in below and out above), so we omit them to keep nodes clean.
+ */
 function nodeMetric(op) {
-  if (op.outputRows != null) {
-    return op.inputRows != null
-      ? `${formatRows(op.inputRows)} → ${formatRows(op.outputRows)}`
-      : formatRows(op.outputRows);
-  }
-  if (op.inputRows != null) return formatRows(op.inputRows);
-  return null;
+  if (op.inputRows == null || op.outputRows == null) return null;
+  const inRows = formatRows(op.inputRows);
+  const outRows = formatRows(op.outputRows);
+  return inRows === outRows ? null : `${inRows} → ${outRows}`;
 }
 
 /* ============================================================
@@ -303,6 +385,19 @@ function buildToolbar() {
     mk('⤢', 'Fit to view', () => fitToView(true)),
   );
   return bar;
+}
+
+/** Static cool→hot legend explaining the node time-heat shading. */
+function buildHeatLegend() {
+  const legend = h('div', 'plan-heat-legend');
+  legend.append(
+    h('span', 'plan-heat-label', ['cool']),
+    h('span', 'plan-heat-bar'),
+    h('span', 'plan-heat-label', ['hot']),
+    h('span', 'plan-heat-caption', ['time / step']),
+  );
+  legend.title = 'Node shading: share of its plan step’s execution time';
+  return legend;
 }
 
 function updateTransform(smooth = false) {
