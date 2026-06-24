@@ -603,3 +603,131 @@ main {
 .tt-val { font-weight: 600; font-variant-numeric: tabular-nums; }
 .tt-muted { color: var(--text-secondary); }
 .tt-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+
+/* ========================================
+   Query Plan tree
+   ======================================== */
+.plan-canvas {
+  position: relative;
+  height: calc(100vh - 220px);
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  background-image:
+    radial-gradient(circle, color-mix(in srgb, var(--border) 60%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+  cursor: grab;
+  touch-action: none;
+}
+.plan-canvas.panning { cursor: grabbing; }
+
+.zoom-container {
+  position: absolute;
+  top: 0; left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.zoom-container.smooth { transition: transform 0.28s ease; }
+
+.plan-edges {
+  position: absolute;
+  top: 0; left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.plan-edge {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+/* node */
+.plan-node {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.4rem 0.55rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fam, var(--border));
+  border-radius: 7px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+.plan-node:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  border-color: var(--fam, var(--accent));
+}
+.plan-node.selected {
+  border-color: var(--fam, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fam, var(--accent)) 55%, transparent);
+}
+.plan-node-head { display: flex; align-items: baseline; gap: 0.4rem; }
+.plan-node-type {
+  font-size: 0.74rem; font-weight: 600;
+  color: var(--fam, var(--text-primary));
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.plan-node-id { font-size: 0.62rem; color: var(--text-secondary); margin-left: auto; }
+.plan-node-metric {
+  font-size: 0.68rem; color: var(--info);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.plan-node-time {
+  position: absolute; right: 0.4rem; bottom: 0.3rem;
+  font-size: 0.62rem; font-weight: 600; color: var(--success);
+  font-variant-numeric: tabular-nums;
+}
+
+/* toolbar */
+.plan-toolbar {
+  position: absolute;
+  top: 0.75rem; right: 0.75rem;
+  display: flex; gap: 0.35rem;
+  z-index: 5;
+}
+.plan-tool-btn {
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-primary);
+  font-family: inherit; font-size: 1rem;
+  cursor: pointer;
+}
+.plan-tool-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* detail panel */
+.plan-detail {
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 340px; max-width: 80%;
+  overflow-y: auto;
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+.plan-detail-head { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.85rem; }
+.plan-detail-close {
+  margin-left: auto;
+  background: none; border: none;
+  color: var(--text-secondary);
+  font-family: inherit; font-size: 1.2rem; line-height: 1;
+  cursor: pointer; padding: 0 0.2rem;
+}
+.plan-detail-close:hover { color: var(--danger); }
+.plan-detail-attrs { margin-top: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.plan-detail .op-attr { grid-template-columns: 130px 1fr; }
+@media (max-width: 700px) {
+  .plan-detail .op-attr { grid-template-columns: 1fr; gap: 0.25rem; }
+}
