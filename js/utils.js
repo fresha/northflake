@@ -31,3 +31,15 @@ export function formatPct(frac, digits = 1) {
   if (frac == null) return '—';
   return `${(frac * 100).toFixed(digits)}%`;
 }
+
+/**
+ * Split a Snowflake fully-qualified name (DATABASE.SCHEMA.TABLE) into parts.
+ * Falls back gracefully for 2-part or 1-part names.
+ */
+export function splitTableName(name) {
+  if (!name) return { database: null, schema: null, table: null };
+  const parts = name.split('.');
+  if (parts.length >= 3) return { database: parts[0], schema: parts[1], table: parts.slice(2).join('.') };
+  if (parts.length === 2) return { database: null, schema: parts[0], table: parts[1] };
+  return { database: null, schema: null, table: parts[0] };
+}
