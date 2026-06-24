@@ -9,8 +9,33 @@
  * v1 is deliberately lean (layout + viewport + click-for-detail). Seams are left
  * for minimap / search / pruning / slowest-panel, mirroring NorthStar's visualizer.
  */
-import { formatRows, formatPct } from './utils.js';
+import { formatRows, formatPct, formatBytes } from './utils.js';
 import { familyOf, metricChips, primaryDetail, fullAttributes, h, htmlEl, escapeHTML } from './operatorView.js';
+
+// Insight thresholds — when an operator's stats cross these, it gets a badge.
+// Tuned against the sample profiles; see docs/internal/PLAN-roadmap.md.
+const SPILL_MIN_BYTES = 10e6;   // ≥10 MB spilled to disk
+const PRUNE_FRAC = 0.9;         // scanned ≥90% of partitions (and >1 partition)
+const CACHE_MAX_FRAC = 0.25;    // <25% served from cache …
+const CACHE_MIN_BYTES = 1e9;    // … on a scan reading >1 GB
+
+const ISSUE_LABELS = { spill: 'spill', prune: 'poor pruning', cache: 'low cache' };
+
+/** Performance issues flagged on an operator, as {kind, title} for badges/tooltips. */
+function nodeIssues(op) {
+  const issues = [];
+  const spill = op.spilledLocal + op.spilledRemote;
+  if (spill >= SPILL_MIN_BYTES) {
+    issues.push({ kind: 'spill', title: `Spilled ${formatBytes(spill)} to disk` });
+  }
+  if (op.partitionsTotal > 1 && (op.partitionsScanned || 0) / op.partitionsTotal >= PRUNE_FRAC) {
+    issues.push({ kind: 'prune', title: `Scanned ${op.partitionsScanned}/${op.partitionsTotal} partitions — little pruning` });
+  }
+  if (op.cacheFraction != null && op.bytesScanned > CACHE_MIN_BYTES && op.cacheFraction < CACHE_MAX_FRAC) {
+    issues.push({ kind: 'cache', title: `${formatPct(op.cacheFraction, 0)} cache hit on ${formatBytes(op.bytesScanned)} scanned` });
+  }
+  return issues;
+}
 
 // Layout geometry
 const NODE_W = 150;
@@ -69,7 +94,11 @@ export function renderPlan(profile, container) {
   detailEl.style.display = 'none';
   slowestPanelEl = buildSlowestPanel(ranked);
 
-  canvasEl.append(toolbar, buildHeatLegend(), slowestPanelEl, detailEl);
+  // Which insight kinds actually occur in this profile (drives the legend key).
+  const presentIssues = new Set();
+  for (const op of profile.operators) for (const { kind } of nodeIssues(op)) presentIssues.add(kind);
+
+  canvasEl.append(toolbar, buildLegend(presentIssues), slowestPanelEl, detailEl);
   container.append(canvasEl);
 
   // Highlight the slowest operators in the tree (now that nodes are in the DOM).
@@ -292,6 +321,16 @@ function buildNode(op, pos, heat) {
 
   const head = h('div', 'plan-node-head');
   head.append(h('span', 'plan-node-type', [op.type]));
+  const issues = nodeIssues(op);
+  if (issues.length) {
+    const badges = h('div', 'plan-node-badges');
+    for (const { kind, title } of issues) {
+      const dot = h('span', `plan-badge badge-${kind}`);
+      dot.title = title;
+      badges.append(dot);
+    }
+    head.append(badges);
+  }
   head.append(h('span', 'plan-node-id', [`op${op.id}`]));
   node.append(head);
 
@@ -412,16 +451,34 @@ function buildToolbar(hasSlowest) {
   return bar;
 }
 
-/** Static cool→hot legend explaining the node time-heat shading. */
-function buildHeatLegend() {
-  const legend = h('div', 'plan-heat-legend');
-  legend.append(
+/**
+ * Bottom-left legend: an issues key (only the insight kinds present in this
+ * profile) plus the cool→hot time-heat scale.
+ */
+function buildLegend(presentIssues) {
+  const legend = h('div', 'plan-legend');
+
+  if (presentIssues.size) {
+    const issues = h('div', 'plan-legend-issues');
+    for (const kind of ['spill', 'prune', 'cache']) {
+      if (!presentIssues.has(kind)) continue;
+      issues.append(h('span', 'plan-legend-item', [
+        h('span', `plan-badge badge-${kind}`),
+        h('span', 'plan-legend-text', [ISSUE_LABELS[kind]]),
+      ]));
+    }
+    legend.append(issues);
+  }
+
+  const heat = h('div', 'plan-legend-heat');
+  heat.append(
     h('span', 'plan-heat-label', ['cool']),
     h('span', 'plan-heat-bar'),
     h('span', 'plan-heat-label', ['hot']),
     h('span', 'plan-heat-caption', ['time / step']),
   );
-  legend.title = 'Node shading: share of its plan step’s execution time';
+  heat.title = 'Node shading: share of its plan step’s execution time';
+  legend.append(heat);
   return legend;
 }
 
