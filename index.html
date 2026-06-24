@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Northflake — Query Profiler for Snowflake</title>
+  <link rel="icon" type="image/svg+xml" href="northflake.svg">
+
+  <!-- JetBrains Mono for the data/code feel (matches NorthStar) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Theme init (prevents flash of wrong theme) -->
+  <script>
+    (function () {
+      const saved = localStorage.getItem('northflake-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.setAttribute('data-theme', saved || (prefersDark ? 'dark' : 'light'));
+    })();
+  </script>
+
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <!-- ===== Header ===== -->
+  <header>
+    <div class="header-left">
+      <a href="./" class="logo-link" id="logoLink">
+        <img src="northflake.svg" alt="Northflake" class="logo-img">
+        <div class="logo">Northflake</div>
+      </a>
+      <h1>Query Profiler for Snowflake</h1>
+    </div>
+    <div class="header-right">
+      <button class="btn-load-query" id="globalLoadBtn">Load Profile</button>
+      <input type="file" id="globalFileInput" accept=".csv" hidden>
+      <button class="btn-theme-toggle" id="themeToggle" title="Toggle theme">
+        <span class="theme-icon-dark">☀️</span>
+        <span class="theme-icon-light">🌙</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== Tab navigation ===== -->
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="operators">Operators</button>
+    <!-- Future: Query Plan, Raw Data -->
+  </nav>
+
+  <!-- ===== Main ===== -->
+  <main>
+    <!-- ===== OVERVIEW TAB ===== -->
+    <div class="tab-panel active" id="tab-overview">
+      <!-- Drop zone (hidden once a profile is loaded) -->
+      <div class="drop-zone" id="dropZone">
+        <div class="drop-zone-icon">❄️</div>
+        <h2>Drop your Snowflake query profile CSV here</h2>
+        <p>or click to load &middot; export from <code>GET_QUERY_OPERATOR_STATS()</code></p>
+        <input type="file" id="dropFileInput" accept=".csv">
+      </div>
+
+      <!-- Dashboard (revealed once a profile loads) -->
+      <div class="dashboard" id="overviewDashboard">
+        <!-- populated by overviewRender.js -->
+      </div>
+    </div>
+
+    <!-- ===== OPERATORS TAB ===== -->
+    <div class="tab-panel" id="tab-operators">
+      <div class="dashboard" id="operatorsDashboard">
+        <!-- populated by operatorsRender.js -->
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

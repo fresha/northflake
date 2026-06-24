@@ -1,0 +1,9 @@
+# Local query profiles used for iterating on the tool (not committed)
+test_profiles/
+examples/
+
+# Internal planning / working docs (not committed)
+docs/internal/
+
+# OS / editor cruft
+.DS_Store
