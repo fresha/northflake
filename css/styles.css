@@ -699,24 +699,30 @@ main {
   font-variant-numeric: tabular-nums;
 }
 
-/* toolbar */
+/* toolbar — grouped pill, matching NorthStar */
 .plan-toolbar {
   position: absolute;
   top: 0.75rem; right: 0.75rem;
-  display: flex; gap: 0.35rem;
+  display: flex; gap: 0.25rem;
+  padding: 0.3rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   z-index: 5;
 }
 .plan-tool-btn {
   width: 32px; height: 32px;
   display: grid; place-items: center;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: none;
   border-radius: 7px;
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-family: inherit; font-size: 1rem;
   cursor: pointer;
 }
-.plan-tool-btn:hover { border-color: var(--accent); color: var(--accent); }
+.plan-tool-btn svg { display: block; }
+.plan-tool-btn:hover { background: var(--hover-tint); color: var(--text-primary); }
+.plan-tool-btn.active { background: var(--accent-dim); color: var(--accent); }
 
 /* time-heat legend */
 .plan-heat-legend {
@@ -745,13 +751,13 @@ main {
   color: var(--text-secondary);
 }
 
-/* slowest-operators panel */
+/* slowest-operators panel — under the toolbar, right-aligned (NorthStar layout) */
 .plan-slowest {
   position: absolute;
-  top: 0.75rem; left: 0.75rem;
+  top: 4rem; right: 0.75rem; left: auto;
   z-index: 6;
-  width: 270px;
-  max-height: calc(100% - 1.5rem);
+  width: 300px;
+  max-height: calc(100% - 4.75rem);
   display: flex; flex-direction: column;
   background: var(--bg-secondary);
   border: 1px solid var(--border);

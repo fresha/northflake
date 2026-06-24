@@ -383,21 +383,29 @@ function closeDetail() {
    Toolbar + viewport
    ============================================================ */
 
+// Toolbar icons — same set as NorthStar's plan visualizer.
+const ICONS = {
+  zoomIn: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2z"/></svg>',
+  zoomOut: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 8a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11A.5.5 0 0 1 2 8z"/></svg>',
+  fit: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/></svg>',
+  slowest: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 11a1 1 0 1 1 2 0v4a1 1 0 1 1-2 0v-4zm6-6a1 1 0 1 1 2 0v10a1 1 0 1 1-2 0V5zM7 7a1 1 0 0 1 2 0v8a1 1 0 1 1-2 0V7zm-6 4a1 1 0 1 1 2 0v4a1 1 0 1 1-2 0v-4z"/></svg>',
+};
+
 function buildToolbar(hasSlowest) {
   const bar = h('div', 'plan-toolbar');
-  const mk = (label, title, fn) => {
-    const b = h('button', 'plan-tool-btn', [label]);
+  const mk = (icon, title, fn) => {
+    const b = htmlEl('button', 'plan-tool-btn', icon);
     b.title = title;
     b.addEventListener('click', fn);
     return b;
   };
   bar.append(
-    mk('+', 'Zoom in', () => zoomToCenter(ZOOM_STEP)),
-    mk('−', 'Zoom out', () => zoomToCenter(1 / ZOOM_STEP)),
-    mk('⤢', 'Fit to view', () => fitToView(true)),
+    mk(ICONS.zoomIn, 'Zoom in', () => zoomToCenter(ZOOM_STEP)),
+    mk(ICONS.zoomOut, 'Zoom out', () => zoomToCenter(1 / ZOOM_STEP)),
+    mk(ICONS.fit, 'Fit to view', () => fitToView(true)),
   );
   if (hasSlowest) {
-    slowestBtnEl = mk('⏱', 'Slowest operators', toggleSlowest);
+    slowestBtnEl = mk(ICONS.slowest, 'Toggle slowest operators panel', toggleSlowest);
     slowestBtnEl.classList.add('active'); // panel open by default
     bar.append(slowestBtnEl);
   }
