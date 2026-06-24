@@ -294,15 +294,17 @@ function buildNode(op, pos, heat) {
   return node;
 }
 
-/** One headline metric for the compact node: rows flow, else output/input rows. */
+/**
+ * In-node rows are shown ONLY when the operator changes cardinality — i.e. the
+ * formatted input and output differ. Pass-throughs (e.g. "17 → 17") and
+ * single-value / zero cases are redundant with the edge labels (which already
+ * show what flows in below and out above), so we omit them to keep nodes clean.
+ */
 function nodeMetric(op) {
-  if (op.outputRows != null) {
-    return op.inputRows != null
-      ? `${formatRows(op.inputRows)} → ${formatRows(op.outputRows)}`
-      : formatRows(op.outputRows);
-  }
-  if (op.inputRows != null) return formatRows(op.inputRows);
-  return null;
+  if (op.inputRows == null || op.outputRows == null) return null;
+  const inRows = formatRows(op.inputRows);
+  const outRows = formatRows(op.outputRows);
+  return inRows === outRows ? null : `${inRows} → ${outRows}`;
 }
 
 /* ============================================================
