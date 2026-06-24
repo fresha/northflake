@@ -4,6 +4,7 @@ import { parseProfile } from './profileParser.js';
 import { renderOverview } from './overviewRender.js';
 import { renderScans } from './scansRender.js';
 import { renderOperators } from './operatorsRender.js';
+import { renderPlan, refreshPlanView } from './planRender.js';
 
 let currentProfile = null;
 
@@ -42,6 +43,8 @@ function loadCSVText(text) {
   const operatorsDash = document.getElementById('operatorsDashboard');
   operatorsDash.classList.add('visible');
   renderOperators(currentProfile, operatorsDash);
+
+  renderPlan(currentProfile, document.getElementById('planRoot'));
 }
 
 function loadFile(file) {
@@ -98,6 +101,9 @@ function wireTabs() {
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById(`tab-${btn.dataset.tab}`)?.classList.add('active');
+      // The Plan canvas computes layout from its container size; recompute the
+      // fit now that the (previously hidden) panel has real dimensions.
+      if (btn.dataset.tab === 'plan') refreshPlanView();
     });
   });
 }

@@ -47,7 +47,8 @@
     <button class="tab-btn active" data-tab="overview">Overview</button>
     <button class="tab-btn" data-tab="scans">Scans</button>
     <button class="tab-btn" data-tab="operators">Operators</button>
-    <!-- Future: Query Plan, Raw Data -->
+    <button class="tab-btn" data-tab="plan">Plan</button>
+    <!-- Future: Raw Data -->
   </nav>
 
   <!-- ===== Main ===== -->
@@ -79,6 +80,13 @@
     <div class="tab-panel" id="tab-operators">
       <div class="dashboard" id="operatorsDashboard">
         <!-- populated by operatorsRender.js -->
+      </div>
+    </div>
+
+    <!-- ===== PLAN TAB ===== -->
+    <div class="tab-panel" id="tab-plan">
+      <div id="planRoot">
+        <!-- populated by planRender.js -->
       </div>
     </div>
   </main>
