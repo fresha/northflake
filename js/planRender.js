@@ -49,6 +49,11 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 1.25;
 
+// Minimap geometry (must match the CSS box size)
+const MINIMAP_W = 180;
+const MINIMAP_H = 120;
+const MINIMAP_PAD = 6;
+
 // Module state (reset on each render)
 let canvasEl = null;
 let zoomEl = null;
@@ -59,6 +64,13 @@ let nodePositions = null;   // uid → {x, y}, for fly-to navigation
 let camera = { x: 0, y: 0, zoom: 1 };
 let contentSize = { width: 0, height: 0 };
 let dragMoved = false;
+
+// Navigation chrome
+let minimapEl = null;
+let minimapViewportEl = null;
+let minimapScale = 0;
+let zoomIndicatorEl = null;
+let zoomIndicatorTimeout = null;
 
 // Filter state
 let planProfile = null;     // current profile (for selector lookups)
@@ -110,7 +122,10 @@ export function renderPlan(profile, container) {
   const presentIssues = new Set();
   for (const op of profile.operators) for (const { kind } of nodeIssues(op)) presentIssues.add(kind);
 
-  canvasEl.append(buildSearchBar(), toolbar, buildLegend(presentIssues), slowestPanelEl, detailEl);
+  canvasEl.append(
+    buildSearchBar(), toolbar, buildLegend(presentIssues), slowestPanelEl,
+    buildZoomIndicator(), buildMinimap(), detailEl,
+  );
   container.append(canvasEl);
 
   // Highlight the slowest operators in the tree (now that nodes are in the DOM).
@@ -681,6 +696,7 @@ function fitToNodes(uids) {
   camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
   camera.x = (minX + cw / 2) - (rect.width / camera.zoom) / 2;
   camera.y = (minY + ch / 2) - (rect.height / camera.zoom) / 2;
+  clampCameraToBounds();
   updateTransform(true);
 }
 
@@ -821,6 +837,7 @@ function zoomToNode(uid) {
   camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, 1.2));
   camera.x = pos.x + NODE_W / 2 - rect.width / (2 * camera.zoom);
   camera.y = pos.y + NODE_H / 2 - rect.height / (2 * camera.zoom);
+  clampCameraToBounds();
   updateTransform(true);
 
   const el = document.getElementById(`plan-node-${uid}`);
@@ -837,6 +854,23 @@ function updateTransform(smooth = false) {
   zoomEl.style.transform =
     `translate(${-camera.x * camera.zoom}px, ${-camera.y * camera.zoom}px) scale(${camera.zoom})`;
   zoomEl.style.transformOrigin = '0 0';
+  updateZoomIndicator();
+  updateMinimap();
+}
+
+/** Keep the camera near the content (allows half a screen of overscroll). */
+function clampCameraToBounds() {
+  if (!canvasEl || !contentSize.width || !contentSize.height) return;
+  const rect = canvasEl.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const viewW = rect.width / camera.zoom, viewH = rect.height / camera.zoom;
+  const cW = contentSize.width, cH = contentSize.height;
+  const marginX = Math.max(0, (viewW - cW) / 2), marginY = Math.max(0, (viewH - cH) / 2);
+  const over = 0.5;
+  const minX = -cW * over - marginX, maxX = cW * (1 + over) - viewW + marginX;
+  const minY = -cH * over - marginY, maxY = cH * (1 + over) - viewH + marginY;
+  if (maxX > minX) camera.x = Math.max(minX, Math.min(maxX, camera.x));
+  if (maxY > minY) camera.y = Math.max(minY, Math.min(maxY, camera.y));
 }
 
 function fitToView(smooth = true) {
@@ -865,7 +899,69 @@ function zoomToCenter(delta, smooth = true) {
   camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camera.zoom * delta));
   camera.x = worldX - cx / camera.zoom;
   camera.y = worldY - cy / camera.zoom;
+  clampCameraToBounds();
   updateTransform(smooth);
+}
+
+/* ---- zoom indicator + minimap ---- */
+
+function buildZoomIndicator() {
+  zoomIndicatorEl = h('div', 'plan-zoom-indicator', ['100%']);
+  return zoomIndicatorEl;
+}
+
+function updateZoomIndicator() {
+  if (!zoomIndicatorEl) return;
+  zoomIndicatorEl.textContent = `${Math.round(camera.zoom * 100)}%`;
+  zoomIndicatorEl.classList.add('visible');
+  clearTimeout(zoomIndicatorTimeout);
+  zoomIndicatorTimeout = setTimeout(() => zoomIndicatorEl.classList.remove('visible'), 1200);
+}
+
+function buildMinimap() {
+  minimapEl = h('div', 'plan-minimap');
+  const nodesLayer = h('div', 'plan-minimap-nodes');
+  minimapViewportEl = h('div', 'plan-minimap-viewport');
+
+  minimapScale = (contentSize.width && contentSize.height)
+    ? Math.min((MINIMAP_W - MINIMAP_PAD * 2) / contentSize.width, (MINIMAP_H - MINIMAP_PAD * 2) / contentSize.height)
+    : 0;
+
+  if (minimapScale > 0) {
+    for (const op of planProfile.operators) {
+      const p = nodePositions.get(op.uid);
+      if (!p) continue;
+      const dot = h('span', `plan-minimap-dot fam-${familyOf(op.type)}`);
+      dot.style.left = `${MINIMAP_PAD + p.x * minimapScale}px`;
+      dot.style.top = `${MINIMAP_PAD + p.y * minimapScale}px`;
+      nodesLayer.append(dot);
+    }
+  }
+
+  minimapEl.append(nodesLayer, minimapViewportEl);
+  minimapEl.addEventListener('click', onMinimapClick);
+  return minimapEl;
+}
+
+function updateMinimap() {
+  if (!minimapViewportEl || !canvasEl || !minimapScale) return;
+  const rect = canvasEl.getBoundingClientRect();
+  minimapViewportEl.style.left = `${MINIMAP_PAD + camera.x * minimapScale}px`;
+  minimapViewportEl.style.top = `${MINIMAP_PAD + camera.y * minimapScale}px`;
+  minimapViewportEl.style.width = `${(rect.width / camera.zoom) * minimapScale}px`;
+  minimapViewportEl.style.height = `${(rect.height / camera.zoom) * minimapScale}px`;
+}
+
+function onMinimapClick(e) {
+  if (!minimapScale || !canvasEl) return;
+  const r = minimapEl.getBoundingClientRect();
+  const worldX = (e.clientX - r.left - MINIMAP_PAD) / minimapScale;
+  const worldY = (e.clientY - r.top - MINIMAP_PAD) / minimapScale;
+  const rect = canvasEl.getBoundingClientRect();
+  camera.x = worldX - (rect.width / camera.zoom) / 2;
+  camera.y = worldY - (rect.height / camera.zoom) / 2;
+  clampCameraToBounds();
+  updateTransform(true);
 }
 
 function setupViewport() {
@@ -881,13 +977,14 @@ function setupViewport() {
     camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, camera.zoom * delta));
     camera.x = worldX - mx / camera.zoom;
     camera.y = worldY - my / camera.zoom;
+    clampCameraToBounds();
     updateTransform();
   }, { passive: false });
 
   let panning = false, startX = 0, startY = 0, camX = 0, camY = 0, pid = null;
 
   canvasEl.addEventListener('pointerdown', e => {
-    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search')) return;
+    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search') || e.target.closest('.plan-minimap')) return;
     panning = true;
     dragMoved = false;
     pid = e.pointerId;
@@ -903,6 +1000,7 @@ function setupViewport() {
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
     camera.x = camX - dx / camera.zoom;
     camera.y = camY - dy / camera.zoom;
+    clampCameraToBounds();
     updateTransform();
   });
 
@@ -919,7 +1017,7 @@ function setupViewport() {
   // Click on empty canvas (not a drag, not a node) closes the detail panel.
   canvasEl.addEventListener('click', e => {
     if (dragMoved) return;
-    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search')) return;
+    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search') || e.target.closest('.plan-minimap')) return;
     closeDetail();
   });
 
