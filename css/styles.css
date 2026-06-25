@@ -877,6 +877,47 @@ main {
   color: var(--text-secondary);
 }
 
+/* zoom indicator — briefly visible on zoom, above the minimap */
+.plan-zoom-indicator {
+  position: absolute;
+  right: 0.75rem; bottom: calc(0.75rem + 120px + 0.5rem);
+  z-index: 5;
+  padding: 0.2rem 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.66rem; font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  opacity: 0; transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.plan-zoom-indicator.visible { opacity: 1; }
+
+/* minimap — bottom-right overview with a draggable-look viewport rect */
+.plan-minimap {
+  position: absolute;
+  right: 0.75rem; bottom: 0.75rem;
+  width: 180px; height: 120px;
+  z-index: 5;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.plan-minimap-nodes { position: absolute; inset: 0; }
+.plan-minimap-dot {
+  position: absolute;
+  width: 3px; height: 3px; border-radius: 1px;
+  background: var(--fam, var(--text-secondary));
+}
+.plan-minimap-viewport {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  pointer-events: none;
+}
+
 /* slowest-operators panel — under the toolbar, right-aligned (NorthStar layout) */
 .plan-slowest {
   position: absolute;
