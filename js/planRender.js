@@ -81,6 +81,16 @@ let filterHideMode = false; // dim (default) vs hide non-matches
 let searchKeyBound = false;  // bind the "/" hotkey only once
 let helpDismissBound = false; // bind the help-card outside-click only once
 
+// Pruning / collapse state
+let rootSet = null;          // Set of root uids (protected from pruning)
+let sourceUids = null;       // Set of leaf/source uids (protected from pruning)
+let currentHeat = null;      // cached heat context (re-used across re-renders)
+let rankedOps = [];          // slowest ranking (for re-applying highlights)
+let minRowThreshold = 0;     // hide operators below this output-row count
+let hiddenTypes = new Set(); // operator families hidden via checkboxes
+let pruningPanelEl = null;
+let pruningBtnEl = null;
+
 /* ============================================================
    Public API
    ============================================================ */
@@ -89,56 +99,81 @@ export function renderPlan(profile, container) {
   container.innerHTML = '';
   camera = { x: 0, y: 0, zoom: 1 };
 
-  const children = buildChildrenMap(profile);
-  const { positions, width, height } = layout(profile, children);
-  contentSize = { width, height };
-  nodePositions = positions;
   planProfile = profile;
-  childrenMap = children;
+  childrenMap = buildChildrenMap(profile);
   filterHideMode = false;
+  minRowThreshold = 0;
+  hiddenTypes = new Set();
+  rootSet = new Set(profile.roots);
+  // Sources = operators nothing feeds into (leaves of our top-down tree, e.g.
+  // TableScans). Protected from pruning so the plan keeps its skeleton.
+  sourceUids = new Set(profile.operators.filter(op => !childrenMap.get(op.uid)?.length).map(op => op.uid));
 
   // Time-heat is normalized per step: overall_percentage in the CSV is per-step,
   // so a single-operator step (e.g. step-1 CREATE TABLE = 100%) must NOT read as hot.
-  const heat = buildHeatContext(profile);
+  currentHeat = buildHeatContext(profile);
+  rankedOps = rankOperators(profile, currentHeat);
 
-  // DOM scaffold: canvas → zoom-container → (svg edges + node divs)
+  // DOM scaffold: canvas → zoom-container (populated by renderTree)
   canvasEl = h('div', 'plan-canvas');
   zoomEl = h('div', 'zoom-container');
-  const svg = buildEdges(profile, positions);
-  zoomEl.append(svg);
-  for (const op of profile.operators) {
-    const pos = positions.get(op.uid);
-    if (pos) zoomEl.append(buildNode(op, pos, heat));
-  }
   canvasEl.append(zoomEl);
 
-  const ranked = rankOperators(profile, heat);
-  const toolbar = buildToolbar(ranked.length > 0);
+  const toolbar = buildToolbar(rankedOps.length > 0);
   detailEl = h('aside', 'plan-detail');
   detailEl.style.display = 'none';
-  slowestPanelEl = buildSlowestPanel(ranked);
+  slowestPanelEl = buildSlowestPanel(rankedOps);
+  pruningPanelEl = buildPruningPanel(profile);
 
   // Which insight kinds actually occur in this profile (drives the legend key).
   const presentIssues = new Set();
   for (const op of profile.operators) for (const { kind } of nodeIssues(op)) presentIssues.add(kind);
 
   canvasEl.append(
-    buildSearchBar(), toolbar, buildLegend(presentIssues), slowestPanelEl,
+    buildSearchBar(), pruningPanelEl, toolbar, buildLegend(presentIssues), slowestPanelEl,
     buildZoomIndicator(), buildMinimap(), detailEl,
   );
   container.append(canvasEl);
 
-  // Highlight the slowest operators in the tree (now that nodes are in the DOM).
-  ranked.slice(0, 5).forEach((op, i) => {
-    document.getElementById(`plan-node-${op.uid}`)
-      ?.classList.add(i === 0 ? 'slowest-top1' : 'slowest-top5');
-  });
+  renderTree();
 
   setupViewport();
   bindSearchHotkey();
   // Tab panel may be hidden at first render (0×0) — fitToView no-ops then and
   // refreshPlanView() re-fits once the tab is shown.
   requestAnimationFrame(() => requestAnimationFrame(() => fitToView(false)));
+}
+
+/**
+ * (Re)build the tree view — edges, nodes, minimap — from the current pruning
+ * state. Called on first render and whenever the pruning controls change.
+ */
+function renderTree() {
+  const pruned = computePruned();
+  const { childMap, edges } = contract(pruned);
+
+  const { positions, width, height } = layout(planProfile.roots, childMap);
+  contentSize = { width, height };
+  nodePositions = positions;
+
+  // Rebuild edges + nodes inside the zoom container.
+  zoomEl.innerHTML = '';
+  zoomEl.append(buildEdges(edges, positions));
+  for (const op of planProfile.operators) {
+    const pos = positions.get(op.uid);
+    if (pos) zoomEl.append(buildNode(op, pos, currentHeat));
+  }
+
+  // Re-apply slowest highlights to whichever of the top-5 are still visible.
+  rankedOps.slice(0, 5).forEach((op, i) => {
+    document.getElementById(`plan-node-${op.uid}`)
+      ?.classList.add(i === 0 ? 'slowest-top1' : 'slowest-top5');
+  });
+
+  rebuildMinimap();
+
+  // Keep an active filter applied across re-renders (nodes were recreated).
+  if (searchInputEl?.value.trim()) applyFilter(filterHideMode ? `${searchInputEl.value.trim()} --hide` : searchInputEl.value.trim());
 }
 
 /** Re-fit when the Plan tab becomes visible (its panel was display:none at render). */
@@ -163,12 +198,67 @@ function buildChildrenMap(profile) {
   return children;
 }
 
+/* ---- pruning: which operators to hide, and how to reconnect around them ---- */
+
+/** The set of operator uids hidden by the current pruning controls. */
+function computePruned() {
+  const pruned = new Set();
+  if (minRowThreshold <= 0 && hiddenTypes.size === 0) return pruned;
+  for (const op of planProfile.operators) {
+    if (rootSet.has(op.uid) || sourceUids.has(op.uid)) continue; // protect skeleton
+    const typeHidden = hiddenTypes.has(familyOf(op.type));
+    const volumePruned = minRowThreshold > 0 && op.outputRows != null && op.outputRows < minRowThreshold;
+    if (typeHidden || volumePruned) pruned.add(op.uid);
+  }
+  return pruned;
+}
+
+/** Nearest visible descendants reachable through a chain of pruned nodes. */
+function nearestVisible(uid, pruned) {
+  const out = [];
+  const seen = new Set();
+  const stack = [...(childrenMap.get(uid) || [])];
+  while (stack.length) {
+    const x = stack.pop();
+    if (seen.has(x)) continue;
+    seen.add(x);
+    if (!pruned.has(x)) out.push(x);
+    else stack.push(...(childrenMap.get(x) || []));
+  }
+  return out;
+}
+
+/**
+ * Contract the graph over visible nodes: a visible parent connects directly to
+ * its visible children, or — across any pruned nodes — to their nearest visible
+ * descendants (those edges are marked dashed). Returns a plain child map for the
+ * layout plus the edge list (with dashed + row volume) for rendering.
+ */
+function contract(pruned) {
+  const childMap = new Map();
+  const edges = [];
+  for (const op of planProfile.operators) {
+    if (pruned.has(op.uid)) continue;
+    const seen = new Set();
+    for (const c of childrenMap.get(op.uid) || []) {
+      const targets = pruned.has(c) ? nearestVisible(c, pruned).map(d => [d, true]) : [[c, false]];
+      for (const [d, dashed] of targets) {
+        if (seen.has(d)) continue;
+        seen.add(d);
+        edges.push({ from: op.uid, to: d, dashed, rows: planProfile.byId.get(d)?.outputRows });
+      }
+    }
+    childMap.set(op.uid, [...seen]);
+  }
+  return { childMap, edges };
+}
+
 /**
  * Top-down layout. Each root tree is laid out independently and offset to the
  * right of the previous one. Shared CTE nodes (≤2 parents) are placed under the
  * first parent that reaches them; the other parent just draws an edge.
  */
-function layout(profile, children) {
+function layout(rootUids, children) {
   const sizes = new Map();   // uid → subtree perpendicular (x) size
   const positions = new Map();
 
@@ -176,7 +266,7 @@ function layout(profile, children) {
   const placed = new Set();  // for position pass (place-once)
 
   // Largest trees first so the main step is leftmost.
-  const roots = [...profile.roots].sort(
+  const roots = [...rootUids].sort(
     (a, b) => subtreeSize(b, children, sizes, new Set()) - subtreeSize(a, children, sizes, new Set())
   );
   sizes.clear();
@@ -237,7 +327,12 @@ function assignPositions(uid, y, x, children, sizes, positions, placed) {
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-function buildEdges(profile, positions) {
+/**
+ * Build the edge SVG from the contracted edge list. Each edge is parent → child
+ * (data flows UP the tree); width scales with the child's output rows. Edges
+ * that bridge pruned nodes are drawn dashed.
+ */
+function buildEdges(edges, positions) {
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.classList.add('plan-edges');
   svg.setAttribute('width', contentSize.width);
@@ -246,34 +341,28 @@ function buildEdges(profile, positions) {
   // Two passes so labels always sit above every edge.
   const labels = [];
 
-  for (const op of profile.operators) {
-    const from = positions.get(op.uid);
-    if (!from) continue;
-    // Data flows from this node UP to its parent(s); the edge carries this
-    // node's output rows. Width scales with that volume (log10).
-    const rows = op.outputRows;
-    const width = edgeWidth(rows);
+  for (const edge of edges) {
+    const from = positions.get(edge.to);    // child (lower)
+    const to = positions.get(edge.from);     // parent (upper)
+    if (!from || !to) continue;
+    const rows = edge.rows;
+    const sx = to.x + NODE_W / 2, sy = to.y + NODE_H;
+    const ex = from.x + NODE_W / 2, ey = from.y;
+    const dy = (ey - sy) * 0.45;
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', `M ${sx} ${sy} C ${sx} ${sy + dy}, ${ex} ${ey - dy}, ${ex} ${ey}`);
+    path.setAttribute('stroke-width', edgeWidth(rows).toFixed(1));
+    path.classList.add('plan-edge');
+    if (edge.dashed) path.classList.add('plan-edge-dashed');
+    path.dataset.from = edge.from;
+    path.dataset.to = edge.to;
+    svg.append(path);
 
-    for (const puid of op.parentUids) {
-      const to = positions.get(puid);
-      if (!to) continue;
-      const sx = to.x + NODE_W / 2, sy = to.y + NODE_H;
-      const ex = from.x + NODE_W / 2, ey = from.y;
-      const dy = (ey - sy) * 0.45;
-      const path = document.createElementNS(SVG_NS, 'path');
-      path.setAttribute('d', `M ${sx} ${sy} C ${sx} ${sy + dy}, ${ex} ${ey - dy}, ${ex} ${ey}`);
-      path.setAttribute('stroke-width', width.toFixed(1));
-      path.classList.add('plan-edge');
-      path.dataset.from = puid;          // forward-compat for the filter slice
-      path.dataset.to = op.uid;
-      svg.append(path);
-
-      // Label every edge with a known volume, including 0 — an explicit "0"
-      // (e.g. a Filter dropping every row → an empty branch) is more
-      // informative than a blank edge.
-      if (rows != null) {
-        labels.push({ x: (sx + ex) / 2, y: (sy + ey) / 2, text: formatRows(rows), from: puid, to: op.uid });
-      }
+    // Label every edge with a known volume, including 0 — an explicit "0"
+    // (e.g. a Filter dropping every row → an empty branch) is more
+    // informative than a blank edge.
+    if (rows != null) {
+      labels.push({ x: (sx + ex) / 2, y: (sy + ey) / 2, text: formatRows(rows), from: edge.from, to: edge.to });
     }
   }
 
@@ -710,6 +799,7 @@ const ICONS = {
   zoomOut: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 8a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11A.5.5 0 0 1 2 8z"/></svg>',
   fit: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zM10 .5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 16 1.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zM.5 10a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 14.5v-4a.5.5 0 0 1 .5-.5zm15 0a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z"/></svg>',
   slowest: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 11a1 1 0 1 1 2 0v4a1 1 0 1 1-2 0v-4zm6-6a1 1 0 1 1 2 0v10a1 1 0 1 1-2 0V5zM7 7a1 1 0 0 1 2 0v8a1 1 0 1 1-2 0V7zm-6 4a1 1 0 1 1 2 0v4a1 1 0 1 1-2 0v-4z"/></svg>',
+  prune: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.5A.5.5 0 0 1 2 1h12a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-.128.334L10 8.692V13.5a.5.5 0 0 1-.342.474l-3 1A.5.5 0 0 1 6 14.5V8.692L1.628 3.834A.5.5 0 0 1 1.5 3.5v-2z"/></svg>',
 };
 
 function buildToolbar(hasSlowest) {
@@ -725,6 +815,8 @@ function buildToolbar(hasSlowest) {
     mk(ICONS.zoomOut, 'Zoom out', () => zoomToCenter(1 / ZOOM_STEP)),
     mk(ICONS.fit, 'Fit to view', () => fitToView(true)),
   );
+  pruningBtnEl = mk(ICONS.prune, 'Prune & collapse', togglePruning);
+  bar.append(pruningBtnEl);
   if (hasSlowest) {
     slowestBtnEl = mk(ICONS.slowest, 'Toggle slowest operators panel', toggleSlowest);
     slowestBtnEl.classList.add('active'); // panel open by default
@@ -964,6 +1056,98 @@ function onMinimapClick(e) {
   updateTransform(true);
 }
 
+/** Replace the minimap in place (dots depend on positions, which pruning changes). */
+function rebuildMinimap() {
+  const old = minimapEl;
+  const fresh = buildMinimap();          // reassigns minimapEl + minimapViewportEl
+  if (old?.parentNode) old.replaceWith(fresh);
+  updateMinimap();
+}
+
+/* ============================================================
+   Pruning panel
+   ============================================================ */
+
+const PRUNE_FAMILY_LABELS = {
+  scan: 'Scan', join: 'Join', filter: 'Filter', agg: 'Aggregate',
+  sort: 'Sort', set: 'CTE / set', dml: 'DML', result: 'Result', other: 'Other',
+};
+
+function buildPruningPanel(profile) {
+  const panel = h('div', 'plan-pruning collapsed');
+
+  const head = h('div', 'plan-pruning-head');
+  head.append(h('span', 'plan-pruning-title', ['Prune & collapse']));
+  const close = h('button', 'plan-pruning-close', ['×']);
+  close.title = 'Hide panel';
+  close.addEventListener('click', togglePruning);
+  head.append(close);
+  panel.append(head);
+
+  // Minimum-rows slider (log scale: All, 10, 100 … 10M).
+  const rowsSec = h('div', 'plan-pruning-section');
+  const rowsHead = h('div', 'plan-pruning-label', [
+    h('span', null, ['Min rows']),
+    h('span', 'plan-pruning-value', ['All']),
+  ]);
+  const slider = document.createElement('input');
+  slider.type = 'range'; slider.min = '0'; slider.max = '7'; slider.step = '1'; slider.value = '0';
+  slider.className = 'plan-pruning-slider';
+  slider.addEventListener('input', () => {
+    const v = parseInt(slider.value, 10);
+    minRowThreshold = v === 0 ? 0 : Math.pow(10, v);
+    rowsHead.querySelector('.plan-pruning-value').textContent = v === 0 ? 'All' : `≥ ${formatRows(minRowThreshold)}`;
+    applyPruning();
+  });
+  rowsSec.append(rowsHead, slider);
+  panel.append(rowsSec);
+
+  // Per-family type checkboxes (only the families present in this profile).
+  const present = [...new Set(profile.operators.map(op => familyOf(op.type)))]
+    .sort((a, b) => (PRUNE_FAMILY_LABELS[a] || a).localeCompare(PRUNE_FAMILY_LABELS[b] || b));
+  const typesSec = h('div', 'plan-pruning-section');
+  typesSec.append(h('div', 'plan-pruning-label', [h('span', null, ['Operator types'])]));
+  const grid = h('div', 'plan-pruning-types');
+  for (const fam of present) {
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true; cb.dataset.fam = fam;
+    cb.addEventListener('change', () => {
+      if (cb.checked) hiddenTypes.delete(fam); else hiddenTypes.add(fam);
+      applyPruning();
+    });
+    const label = h('label', `plan-pruning-type fam-${fam}`, [cb, h('span', null, [PRUNE_FAMILY_LABELS[fam] || fam])]);
+    grid.append(label);
+  }
+  typesSec.append(grid);
+  panel.append(typesSec);
+
+  const reset = h('button', 'plan-pruning-reset', ['Reset']);
+  reset.addEventListener('click', () => {
+    minRowThreshold = 0;
+    hiddenTypes.clear();
+    slider.value = '0';
+    rowsHead.querySelector('.plan-pruning-value').textContent = 'All';
+    grid.querySelectorAll('input').forEach(c => { c.checked = true; });
+    applyPruning();
+  });
+  panel.append(reset);
+
+  return panel;
+}
+
+function togglePruning() {
+  if (!pruningPanelEl) return;
+  const collapsed = pruningPanelEl.classList.toggle('collapsed');
+  pruningBtnEl?.classList.toggle('active', !collapsed);
+}
+
+/** Re-render the tree for the current pruning state, keeping the camera put. */
+function applyPruning() {
+  renderTree();
+  clampCameraToBounds();
+  updateTransform();
+}
+
 function setupViewport() {
   if (!canvasEl) return;
 
@@ -984,7 +1168,7 @@ function setupViewport() {
   let panning = false, startX = 0, startY = 0, camX = 0, camY = 0, pid = null;
 
   canvasEl.addEventListener('pointerdown', e => {
-    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search') || e.target.closest('.plan-minimap')) return;
+    if (e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search') || e.target.closest('.plan-minimap') || e.target.closest('.plan-pruning')) return;
     panning = true;
     dragMoved = false;
     pid = e.pointerId;
@@ -1017,7 +1201,7 @@ function setupViewport() {
   // Click on empty canvas (not a drag, not a node) closes the detail panel.
   canvasEl.addEventListener('click', e => {
     if (dragMoved) return;
-    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search') || e.target.closest('.plan-minimap')) return;
+    if (e.target.closest('.plan-node') || e.target.closest('.plan-toolbar') || e.target.closest('.plan-detail') || e.target.closest('.plan-slowest') || e.target.closest('.plan-search') || e.target.closest('.plan-minimap') || e.target.closest('.plan-pruning')) return;
     closeDetail();
   });
 

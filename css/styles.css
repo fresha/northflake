@@ -643,6 +643,8 @@ main {
   stroke-width: 1.5;       /* default; JS overrides per row volume */
   stroke-linecap: round;
 }
+/* edges that bridge pruned (collapsed) nodes */
+.plan-edge-dashed { stroke-dasharray: 5 5; opacity: 0.6; }
 /* edge data-flow labels (row counts) */
 .plan-edge-label-bg {
   fill: var(--bg-secondary);
@@ -876,6 +878,65 @@ main {
   border-left: 1px solid var(--border);
   color: var(--text-secondary);
 }
+
+/* pruning / collapse panel — top-left, under the search bar */
+.plan-pruning {
+  position: absolute;
+  top: 4rem; left: 0.75rem;
+  z-index: 6;
+  width: 240px;
+  display: flex; flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+}
+.plan-pruning.collapsed { display: none; }
+.plan-pruning-head {
+  display: flex; align-items: center;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.plan-pruning-title {
+  font-size: 0.72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-secondary);
+}
+.plan-pruning-close {
+  margin-left: auto;
+  background: none; border: none;
+  color: var(--text-secondary);
+  font-family: inherit; font-size: 1.1rem; line-height: 1;
+  cursor: pointer; padding: 0 0.15rem;
+}
+.plan-pruning-close:hover { color: var(--danger); }
+.plan-pruning-section { padding: 0.6rem 0.7rem; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+.plan-pruning-label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 0.45rem;
+}
+.plan-pruning-value { color: var(--accent); font-weight: 600; text-transform: none; letter-spacing: 0; }
+.plan-pruning-slider { width: 100%; accent-color: var(--accent); cursor: pointer; }
+.plan-pruning-types { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem 0.5rem; }
+.plan-pruning-type {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-size: 0.72rem; color: var(--text-primary);
+  cursor: pointer;
+}
+.plan-pruning-type input { accent-color: var(--fam, var(--accent)); cursor: pointer; }
+.plan-pruning-reset {
+  margin: 0.6rem 0.7rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem;
+  color: var(--text-secondary);
+  font-family: inherit; font-size: 0.7rem;
+  cursor: pointer;
+}
+.plan-pruning-reset:hover { border-color: var(--accent); color: var(--accent); }
 
 /* zoom indicator — briefly visible on zoom, above the minimap */
 .plan-zoom-indicator {
