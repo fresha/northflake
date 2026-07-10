@@ -74,9 +74,11 @@ const COLUMNS = [
 ];
 
 let sortState = { key: 'time', dir: 'desc' };
+let filter = { db: '', schema: '', table: '' };
 
 export function renderScans(profile, container) {
   sortState = { key: 'time', dir: 'desc' };
+  filter = { db: '', schema: '', table: '' };
   container.innerHTML = '';
 
   const scans = profile.operators.filter(op => SCAN_TYPES.has(op.type));
@@ -93,9 +95,11 @@ export function renderScans(profile, container) {
   table.className = 'scans-table';
   table.append(buildHead(), document.createElement('tbody'));
   wrap.append(table);
-  container.append(wrap);
 
-  const rerender = () => fillBody(table, scans);
+  const rerender = () => fillBody(table, scans, count);
+  const { toolbar, count } = buildFilterBar(scans, rerender);
+  container.append(toolbar, wrap);
+
   table.tHead.addEventListener('click', e => {
     const th = e.target.closest('th');
     if (!th || !th.dataset.key) return; // group-row headers aren't sortable
@@ -129,6 +133,89 @@ function summaryStrip(scans) {
     card('Cache Hit', overallCache != null ? formatPct(overallCache) : '—', 'time', 'weighted by bytes'),
   );
   return wrap;
+}
+
+/* ---------- filter bar ----------
+   Database + Schema are low-cardinality → dropdowns. Table is high-cardinality
+   → free-text substring. Scoping each facet independently avoids the ambiguity
+   of a single search matching a value in any of the three parts. */
+function buildFilterBar(scans, onChange) {
+  const toolbar = el('div', 'scans-toolbar');
+
+  const dbSel = document.createElement('select');
+  dbSel.className = 'scans-select';
+  const schemaSel = document.createElement('select');
+  schemaSel.className = 'scans-select';
+
+  const search = document.createElement('input');
+  search.className = 'ops-search scans-table-search';
+  search.placeholder = 'Search table…';
+  search.autocomplete = 'off';
+
+  const count = el('span', 'scans-count');
+
+  // distinct databases across all scans
+  const databases = distinct(scans.map(s => parts(s).database));
+  fillOptions(dbSel, databases, 'All databases');
+
+  // schemas depend on the chosen database (only those present within it)
+  const syncSchemas = () => {
+    const prev = filter.schema;
+    const pool = filter.db
+      ? scans.filter(s => (parts(s).database || '') === filter.db)
+      : scans;
+    const schemas = distinct(pool.map(s => parts(s).schema));
+    fillOptions(schemaSel, schemas, 'All schemas');
+    // keep the selection if it still exists under the new database
+    if (prev && schemas.includes(prev)) schemaSel.value = prev;
+    else { schemaSel.value = ''; filter.schema = ''; }
+  };
+  syncSchemas();
+
+  dbSel.addEventListener('change', () => {
+    filter.db = dbSel.value;
+    syncSchemas();
+    onChange();
+  });
+  schemaSel.addEventListener('change', () => {
+    filter.schema = schemaSel.value;
+    onChange();
+  });
+  search.addEventListener('input', () => {
+    filter.table = search.value.trim().toLowerCase();
+    onChange();
+  });
+
+  toolbar.append(
+    field('Database', dbSel),
+    field('Schema', schemaSel),
+    search,
+    count,
+  );
+  return { toolbar, count };
+}
+
+/** distinct, non-empty, case-sorted values. */
+function distinct(values) {
+  return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function fillOptions(sel, values, allLabel) {
+  sel.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = ''; all.textContent = allLabel;
+  sel.append(all);
+  for (const v of values) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = v;
+    sel.append(o);
+  }
+}
+
+function field(label, control) {
+  const w = el('div', 'scans-field');
+  w.append(el('label', 'scans-field-label', label), control);
+  return w;
 }
 
 /* ---------- table head ---------- */
@@ -179,16 +266,41 @@ function defaultDir(key) {
 }
 
 /* ---------- table body ---------- */
-function fillBody(table, scans) {
+function fillBody(table, scans, count) {
+  const active = filter.db || filter.schema || filter.table;
+  const filtered = scans.filter(s => {
+    const p = parts(s);
+    if (filter.db && (p.database || '') !== filter.db) return false;
+    if (filter.schema && (p.schema || '') !== filter.schema) return false;
+    if (filter.table && !(p.table || '').toLowerCase().includes(filter.table)) return false;
+    return true;
+  });
+
   const col = COLUMNS.find(c => c.key === sortState.key);
-  const sorted = [...scans].sort((a, b) => {
+  const sorted = [...filtered].sort((a, b) => {
     const av = col.val(a), bv = col.val(b);
     const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
     return sortState.dir === 'asc' ? cmp : -cmp;
   });
 
+  if (count) {
+    count.textContent = active
+      ? `${filtered.length} of ${scans.length} scans`
+      : `${scans.length} scan${scans.length === 1 ? '' : 's'}`;
+  }
+
   const tbody = table.tBodies[0];
   tbody.innerHTML = '';
+  if (sorted.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = COLUMNS.length;
+    td.className = 'scans-empty';
+    td.textContent = 'No scans match this filter.';
+    tr.append(td);
+    tbody.append(tr);
+    return;
+  }
   for (const s of sorted) {
     const tr = document.createElement('tr');
     for (const c of COLUMNS) {
