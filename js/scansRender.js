@@ -75,10 +75,21 @@ const COLUMNS = [
 
 let sortState = { key: 'time', dir: 'desc' };
 let filter = { db: '', schema: '', table: '' };
+// Database/Schema are handy but wide; hiding them frees width for the metrics.
+let hideQualifiers = false;
+
+/** Keys hidden when the qualifier columns are collapsed. */
+const QUALIFIER_KEYS = new Set(['database', 'schema']);
+
+/** Columns currently shown, honoring the hide-qualifiers toggle. */
+function visibleColumns() {
+  return hideQualifiers ? COLUMNS.filter(c => !QUALIFIER_KEYS.has(c.key)) : COLUMNS;
+}
 
 export function renderScans(profile, container) {
   sortState = { key: 'time', dir: 'desc' };
   filter = { db: '', schema: '', table: '' };
+  hideQualifiers = false;
   container.innerHTML = '';
 
   const scans = profile.operators.filter(op => SCAN_TYPES.has(op.type));
@@ -97,11 +108,18 @@ export function renderScans(profile, container) {
   wrap.append(table);
 
   const rerender = () => fillBody(table, scans, count);
-  const { toolbar, count } = buildFilterBar(scans, rerender);
+  // Rebuild the header (column set changed) then refill the body.
+  const rebuild = () => {
+    table.replaceChild(buildHead(), table.tHead);
+    updateHeadIndicators(table.tHead);
+    rerender();
+  };
+  const { toolbar, count } = buildFilterBar(scans, rerender, rebuild);
   container.append(toolbar, wrap);
 
-  table.tHead.addEventListener('click', e => {
-    const th = e.target.closest('th');
+  // Delegated so it survives header rebuilds when columns are toggled.
+  table.addEventListener('click', e => {
+    const th = e.target.closest('thead th');
     if (!th || !th.dataset.key) return; // group-row headers aren't sortable
     const key = th.dataset.key;
     if (sortState.key === key) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
@@ -139,7 +157,7 @@ function summaryStrip(scans) {
    Database + Schema are low-cardinality → dropdowns. Table is high-cardinality
    → free-text substring. Scoping each facet independently avoids the ambiguity
    of a single search matching a value in any of the three parts. */
-function buildFilterBar(scans, onChange) {
+function buildFilterBar(scans, onChange, onColumnsChange) {
   const toolbar = el('div', 'scans-toolbar');
 
   const dbSel = document.createElement('select');
@@ -186,10 +204,26 @@ function buildFilterBar(scans, onChange) {
     onChange();
   });
 
+  // Toggle to collapse the wide Database/Schema columns (still filterable above).
+  const toggle = el('label', 'scans-toggle');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = hideQualifiers;
+  box.addEventListener('change', () => {
+    hideQualifiers = box.checked;
+    // If we were sorting by a now-hidden column, fall back to the default.
+    if (hideQualifiers && QUALIFIER_KEYS.has(sortState.key)) {
+      sortState = { key: 'time', dir: 'desc' };
+    }
+    onColumnsChange();
+  });
+  toggle.append(box, el('span', null, 'Hide db / schema'));
+
   toolbar.append(
     field('Database', dbSel),
     field('Schema', schemaSel),
     search,
+    toggle,
     count,
   );
   return { toolbar, count };
@@ -221,13 +255,14 @@ function field(label, control) {
 /* ---------- table head ---------- */
 function buildHead() {
   const thead = document.createElement('thead');
+  const cols = visibleColumns();
 
   // Row 1: group headers (merge consecutive columns sharing a group).
   const grpRow = el('tr', 'grp-row');
-  for (let i = 0; i < COLUMNS.length;) {
-    const g = COLUMNS[i].group;
+  for (let i = 0; i < cols.length;) {
+    const g = cols[i].group;
     let span = 1;
-    while (i + span < COLUMNS.length && COLUMNS[i + span].group === g) span++;
+    while (i + span < cols.length && cols[i + span].group === g) span++;
     const meta = GROUPS[g] || { label: '', cls: '' };
     const th = document.createElement('th');
     th.colSpan = span;
@@ -239,7 +274,7 @@ function buildHead() {
 
   // Row 2: sortable column headers with description tooltips.
   const colRow = el('tr', 'col-row');
-  for (const c of COLUMNS) {
+  for (const c of cols) {
     const th = document.createElement('th');
     th.dataset.key = c.key;
     th.className = `align-${c.align}${c.cls ? ' ' + c.cls : ''}`;
@@ -276,7 +311,8 @@ function fillBody(table, scans, count) {
     return true;
   });
 
-  const col = COLUMNS.find(c => c.key === sortState.key);
+  const cols = visibleColumns();
+  const col = cols.find(c => c.key === sortState.key) || cols[0];
   const sorted = [...filtered].sort((a, b) => {
     const av = col.val(a), bv = col.val(b);
     const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
@@ -294,7 +330,7 @@ function fillBody(table, scans, count) {
   if (sorted.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = COLUMNS.length;
+    td.colSpan = cols.length;
     td.className = 'scans-empty';
     td.textContent = 'No scans match this filter.';
     tr.append(td);
@@ -303,7 +339,7 @@ function fillBody(table, scans, count) {
   }
   for (const s of sorted) {
     const tr = document.createElement('tr');
-    for (const c of COLUMNS) {
+    for (const c of cols) {
       const td = document.createElement('td');
       td.className = `align-${c.align}${c.cls ? ' ' + c.cls : ''}`;
       const content = c.cell(s);
