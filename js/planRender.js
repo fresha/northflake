@@ -920,7 +920,7 @@ function toggleSlowest() {
 }
 
 /** Center the camera on a node and flash it briefly. */
-function zoomToNode(uid) {
+export function zoomToNode(uid) {
   const pos = nodePositions?.get(uid);
   if (!pos || !canvasEl) return;
   const rect = canvasEl.getBoundingClientRect();
