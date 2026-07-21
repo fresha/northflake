@@ -632,6 +632,37 @@ main {
   padding-bottom: 0.45rem;
   border-bottom: 1px solid var(--border);
 }
+/* qualified table name in a hover card: an aligned identity block. Muted label
+   column, values left-aligned (monospace keeps the value column lined up) so a
+   long qualified name reads cleanly and stays consistent with the metric rows. */
+.tt-idblock {
+  margin-top: 0.12rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--border);
+}
+.tt-id {
+  display: flex;
+  gap: 0.85rem;
+  padding: 0.1rem 0;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+.tt-id-label {
+  flex-shrink: 0;
+  min-width: 4rem;
+  color: var(--text-secondary);
+}
+.tt-id-val { color: var(--text-primary); overflow-wrap: anywhere; }
+
+/* metric groups in a hover card: a faint hairline between clusters (Output /
+   IO / Pruning / Projection / Time) so related numbers read together. Fainter
+   than the identity divider above, to keep the hierarchy. */
+.tt-mgroup + .tt-mgroup {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
 .tt-desc { color: var(--text-secondary); margin-top: 0.2rem; font-size: 0.74rem; }
 .tt-list { word-break: break-word; max-height: 320px; overflow: hidden; }
 .tt-row {
@@ -734,6 +765,15 @@ main {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .plan-node-id { font-size: 0.62rem; color: var(--text-secondary); flex-shrink: 0; }
+
+/* scan table-name subtitle: leave room on the right for the absolute time% */
+.plan-node-sub {
+  font-size: 0.66rem;
+  color: var(--text-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding-right: 2.4rem;
+}
+.plan-node.has-sub { justify-content: flex-start; }
 
 /* insight badges (spill / poor pruning / low cache) */
 .plan-node-badges { display: inline-flex; gap: 3px; flex-shrink: 0; align-items: center; }

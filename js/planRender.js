@@ -9,8 +9,9 @@
  * v1 is deliberately lean (layout + viewport + click-for-detail). Seams are left
  * for minimap / search / pruning / slowest-panel, mirroring NorthStar's visualizer.
  */
-import { formatRows, formatPct, formatBytes } from './utils.js';
+import { formatRows, formatPct, formatBytes, formatCount, splitTableName } from './utils.js';
 import { familyOf, metricChips, primaryDetail, fullAttributes, h, htmlEl, escapeHTML } from './operatorView.js';
+import { attachTooltip } from './tooltip.js';
 
 // Insight thresholds — when an operator's stats cross these, it gets a badge.
 // Tuned against the sample profiles; see docs/internal/PLAN-roadmap.md.
@@ -453,6 +454,21 @@ function buildNode(op, pos, heat) {
   head.append(h('span', 'plan-node-id', [`op${op.id}`]));
   node.append(head);
 
+  // Scan nodes carry a subtitle with the (short) table name — the single most
+  // useful thing about a scan, so you don't have to click to see what it reads.
+  if (fam === 'scan') {
+    const short = splitTableName(op.attributes?.table_name).table;
+    if (short) {
+      const sub = h('span', 'plan-node-sub', [short]);
+      sub.title = op.attributes.table_name;
+      node.append(sub);
+      node.classList.add('has-sub');
+    }
+    // Rich hover card of the scan's IO / pruning / time stats (northstar-style),
+    // so the metrics are one hover away rather than one click.
+    attachTooltip(node, () => scanTooltip(op));
+  }
+
   // No in-node row counts: the edge labels already carry every operator's
   // input (incoming edge) and output (outgoing edge), so "X → Y" in the node is
   // redundant — and for multi-input ops (joins) a summed input is misleading.
@@ -465,6 +481,89 @@ function buildNode(op, pos, heat) {
     openDetail(op, node);
   });
   return node;
+}
+
+/** Execution-time phases for the scan hover card (key, CSS class, label). */
+const SCAN_PHASES = [
+  ['processing', 'processing', 'Processing (CPU)'],
+  ['local_disk_io', 'local-io', 'Local disk IO (cache)'],
+  ['remote_disk_io', 'remote-io', 'Remote disk IO (cold)'],
+  ['network_communication', 'network', 'Network'],
+  ['synchronization', 'sync', 'Synchronization'],
+  ['initialization', 'init', 'Initialization'],
+];
+
+/**
+ * HTML for a scan node's hover card: the fully-qualified table name plus the
+ * IO / pruning / projection / time stats that matter for scan performance.
+ * Mirrors the Scans-tab metrics so both surfaces stay consistent.
+ */
+function scanTooltip(op) {
+  const a = op.attributes || {};
+  const ov = op.timePct || 0;
+
+  const row = (label, value, valCls) =>
+    `<div class="tt-row"><span class="tt-key">${label}</span>` +
+    `<span class="tt-val${valCls ? ' ' + valCls : ''}">${value}</span></div>`;
+
+  // Metrics are collected into semantic groups (Output · IO · Pruning ·
+  // Projection), mirroring the Scans-tab column groups, then rendered with a
+  // faint hairline between them so related numbers read as a cluster.
+  const output = [], io = [], prune = [], proj = [];
+  if (op.outputRows != null) output.push(row('Rows', formatRows(op.outputRows)));
+  if (op.bytesScanned > 0) io.push(row('Bytes', formatBytes(op.bytesScanned)));
+  if (op.cacheFraction != null) {
+    const cls = op.cacheFraction >= 0.7 ? 'c-good' : op.cacheFraction >= 0.3 ? 'c-warn' : 'c-danger';
+    io.push(row('Cache', formatPct(op.cacheFraction, 0), cls));
+  }
+  if (op.partitionsTotal != null && op.partitionsTotal > 0) {
+    const scanned = op.partitionsScanned || 0;
+    const pruned = 1 - scanned / op.partitionsTotal;
+    const cls = pruned < 0.1 ? 'c-danger' : pruned < 0.5 ? 'c-warn' : 'c-good';
+    prune.push(row('Partitions', `${formatCount(scanned)} / ${formatCount(op.partitionsTotal)}`));
+    prune.push(row('Pruned', formatPct(pruned), cls));
+  }
+  const cols = (a.columns || []).length;
+  if (cols) proj.push(row('Columns', String(cols)));
+  const variants = (a.extracted_variant_paths || []).length;
+  if (variants) proj.push(row('Variant paths', String(variants)));
+
+  const group = rowsArr => rowsArr.length ? `<div class="tt-mgroup">${rowsArr.join('')}</div>` : '';
+  const metrics = [output, io, prune, proj].map(group).join('');
+
+  // Time-phase breakdown (only when this scan has a recorded share of time).
+  // Percentages are each phase's share of THIS operator's time (they sum to
+  // ~100%); the header states the operator's share of the whole step.
+  let phases = '';
+  if (ov > 0) {
+    for (const [key, cssName, label] of SCAN_PHASES) {
+      const v = op.timeBreakdown?.[key] || 0;
+      if (v <= 0) continue;
+      phases += `<div class="tt-row">
+        <span class="tt-key"><span class="tt-swatch ph-${cssName}"></span>${label}</span>
+        <span class="tt-val">${formatPct(v / ov, 0)}</span></div>`;
+    }
+  }
+  const timeBlock = phases
+    ? `<div class="tt-mgroup"><div class="tt-row tt-muted">${formatPct(ov)} of step time</div>${phases}</div>`
+    : '';
+
+  // DATABASE.SCHEMA.TABLE as an aligned identity block — a muted label column
+  // and left-aligned values, so the (often long) qualified name reads clearly
+  // and stays consistent with the metric rows below.
+  const { database, schema, table } = splitTableName(a.table_name);
+  const idRow = (label, value) => value
+    ? `<div class="tt-id"><span class="tt-id-label">${label}</span>` +
+      `<span class="tt-id-val">${escapeHTML(value)}</span></div>`
+    : '';
+  const nameBlock = a.table_name
+    ? `<div class="tt-idblock">${idRow('database', database)}${idRow('schema', schema)}` +
+      `${idRow('table', table || a.table_name)}</div>`
+    : '<div class="tt-idblock"><div class="tt-id"><span class="tt-id-val">(unknown table)</span></div></div>';
+  return `<div class="tt-title">${op.type} <span class="tt-dim">op${op.id}</span></div>
+    ${nameBlock}
+    ${metrics || '<div class="tt-mgroup"><div class="tt-row tt-muted">No scan metrics recorded</div></div>'}
+    ${timeBlock}`;
 }
 
 /* ============================================================
