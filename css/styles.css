@@ -1084,6 +1084,19 @@ main {
 /* slowest highlights on tree nodes */
 .plan-node.slowest-top1 { box-shadow: 0 0 0 2px var(--danger); }
 .plan-node.slowest-top5 { box-shadow: 0 0 0 2px var(--orange); }
+/* clickable operator id in the Scans table → jumps to the Plan tab */
+.op-link {
+  color: var(--accent);
+  cursor: pointer;
+  border-bottom: 1px dotted transparent;
+}
+.op-link:hover,
+.op-link:focus-visible {
+  color: var(--accent-hover);
+  border-bottom-color: currentColor;
+  outline: none;
+}
+
 .plan-node.flash { animation: plan-node-flash 1.6s ease; }
 @keyframes plan-node-flash {
   0%, 100% { box-shadow: 0 0 0 0 transparent; }

@@ -4,6 +4,7 @@
  */
 import { formatBytes, formatRows, formatCount, formatPct, splitTableName } from './utils.js';
 import { attachTooltip } from './tooltip.js';
+import { zoomToNode } from './planRender.js';
 
 const SCAN_TYPES = new Set(['TableScan', 'ExternalScan']);
 
@@ -33,8 +34,8 @@ let ctx = { maxOverall: 1 };
 /** Column definitions. `val` = sort/numeric value, `cell` = DOM/text for the cell. */
 const COLUMNS = [
   { key: 'op', label: 'Op', group: 'id', align: 'left', val: s => s.id,
-    desc: 'Operator id (unique within its plan step).',
-    cell: s => text(`op${s.id}`) },
+    desc: 'Operator id (unique within its plan step). Click to reveal it in the Plan tab.',
+    cell: s => opLink(s) },
   { key: 'database', label: 'Database', group: 'id', align: 'left', val: s => (parts(s).database || '').toLowerCase(),
     desc: 'Source database (first part of DATABASE.SCHEMA.TABLE).',
     cell: s => dim(parts(s).database) },
@@ -437,6 +438,27 @@ function tableCell(s) {
 
 function dim(value) {
   return value ? el('span', 'tbl-qualifier', value) : text('—');
+}
+
+/** Clickable op id → jumps to the Plan tab and centers on this operator. */
+function opLink(s) {
+  const a = el('span', 'op-link', `op${s.id}`);
+  a.setAttribute('role', 'button');
+  a.tabIndex = 0;
+  const go = () => gotoPlanNode(s.uid);
+  a.addEventListener('click', go);
+  a.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+  });
+  return a;
+}
+
+/** Activate the Plan tab, then center + flash the node once its layout is live. */
+function gotoPlanNode(uid) {
+  document.querySelector('.tab-btn[data-tab="plan"]')?.click();
+  // The plan panel refits its camera on tab activation (refreshPlanView);
+  // wait a beat for that layout pass before centering on the node.
+  setTimeout(() => zoomToNode(uid), 120);
 }
 
 /* ---------- helpers ---------- */
