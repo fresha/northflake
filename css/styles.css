@@ -663,6 +663,21 @@ main {
   padding-top: 0.4rem;
   border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
 }
+/* the join card's output row — brighter than the input rows above it */
+.tt-strong { color: var(--text-primary); font-weight: 600; }
+/* join condition: label + the join keys, clamped to a few lines (full text
+   lives in the click-detail panel). */
+.tt-cond {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+.tt-cond-label { color: var(--text-secondary); }
+.tt-cond-val { color: var(--text-primary); }
 .tt-desc { color: var(--text-secondary); margin-top: 0.2rem; font-size: 0.74rem; }
 .tt-list { word-break: break-word; max-height: 320px; overflow: hidden; }
 .tt-row {

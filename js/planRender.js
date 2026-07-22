@@ -467,6 +467,15 @@ function buildNode(op, pos, heat) {
     // Rich hover card of the scan's IO / pruning / time stats (northstar-style),
     // so the metrics are one hover away rather than one click.
     attachTooltip(node, () => scanTooltip(op));
+  } else if (JOIN_TYPES.has(op.type)) {
+    // Join nodes: subtitle with the join type, and a hover card of the row
+    // flow (per-input + output + fan-out), spill, network, time and condition.
+    const jt = op.attributes?.join_type;
+    if (jt) {
+      node.append(h('span', 'plan-node-sub', [jt]));
+      node.classList.add('has-sub');
+    }
+    attachTooltip(node, () => joinTooltip(op));
   }
 
   // No in-node row counts: the edge labels already carry every operator's
@@ -483,8 +492,11 @@ function buildNode(op, pos, heat) {
   return node;
 }
 
-/** Execution-time phases for the scan hover card (key, CSS class, label). */
-const SCAN_PHASES = [
+/** Operator types that get the join hover card (excludes JoinFilter). */
+const JOIN_TYPES = new Set(['Join', 'CartesianJoin']);
+
+/** Execution-time phases for the hover cards (key, CSS class, label). */
+const EXEC_PHASES = [
   ['processing', 'processing', 'Processing (CPU)'],
   ['local_disk_io', 'local-io', 'Local disk IO (cache)'],
   ['remote_disk_io', 'remote-io', 'Remote disk IO (cold)'],
@@ -493,6 +505,30 @@ const SCAN_PHASES = [
   ['initialization', 'init', 'Initialization'],
 ];
 
+/** One label/value metric row for a hover card. */
+function metricRow(label, value, valCls) {
+  return `<div class="tt-row"><span class="tt-key">${label}</span>` +
+    `<span class="tt-val${valCls ? ' ' + valCls : ''}">${value}</span></div>`;
+}
+
+/** Time-phase breakdown group for a hover card, or '' when no timing recorded.
+ *  Phase %s are each phase's share of the operator's own time (they sum to
+ *  ~100%); the header line carries the operator's share of total step time. */
+function timeGroup(op) {
+  const ov = op.timePct || 0;
+  if (ov <= 0) return '';
+  let phases = '';
+  for (const [key, cssName, label] of EXEC_PHASES) {
+    const v = op.timeBreakdown?.[key] || 0;
+    if (v <= 0) continue;
+    phases += `<div class="tt-row">
+      <span class="tt-key"><span class="tt-swatch ph-${cssName}"></span>${label}</span>
+      <span class="tt-val">${formatPct(v / ov, 0)}</span></div>`;
+  }
+  if (!phases) return '';
+  return `<div class="tt-mgroup"><div class="tt-row tt-muted">${formatPct(ov)} of step time</div>${phases}</div>`;
+}
+
 /**
  * HTML for a scan node's hover card: the fully-qualified table name plus the
  * IO / pruning / projection / time stats that matter for scan performance.
@@ -500,53 +536,32 @@ const SCAN_PHASES = [
  */
 function scanTooltip(op) {
   const a = op.attributes || {};
-  const ov = op.timePct || 0;
-
-  const row = (label, value, valCls) =>
-    `<div class="tt-row"><span class="tt-key">${label}</span>` +
-    `<span class="tt-val${valCls ? ' ' + valCls : ''}">${value}</span></div>`;
 
   // Metrics are collected into semantic groups (Output · IO · Pruning ·
   // Projection), mirroring the Scans-tab column groups, then rendered with a
   // faint hairline between them so related numbers read as a cluster.
   const output = [], io = [], prune = [], proj = [];
-  if (op.outputRows != null) output.push(row('Rows', formatRows(op.outputRows)));
-  if (op.bytesScanned > 0) io.push(row('Bytes', formatBytes(op.bytesScanned)));
+  if (op.outputRows != null) output.push(metricRow('Rows', formatRows(op.outputRows)));
+  if (op.bytesScanned > 0) io.push(metricRow('Bytes', formatBytes(op.bytesScanned)));
   if (op.cacheFraction != null) {
     const cls = op.cacheFraction >= 0.7 ? 'c-good' : op.cacheFraction >= 0.3 ? 'c-warn' : 'c-danger';
-    io.push(row('Cache', formatPct(op.cacheFraction, 0), cls));
+    io.push(metricRow('Cache', formatPct(op.cacheFraction, 0), cls));
   }
   if (op.partitionsTotal != null && op.partitionsTotal > 0) {
     const scanned = op.partitionsScanned || 0;
     const pruned = 1 - scanned / op.partitionsTotal;
     const cls = pruned < 0.1 ? 'c-danger' : pruned < 0.5 ? 'c-warn' : 'c-good';
-    prune.push(row('Partitions', `${formatCount(scanned)} / ${formatCount(op.partitionsTotal)}`));
-    prune.push(row('Pruned', formatPct(pruned), cls));
+    prune.push(metricRow('Partitions', `${formatCount(scanned)} / ${formatCount(op.partitionsTotal)}`));
+    prune.push(metricRow('Pruned', formatPct(pruned), cls));
   }
   const cols = (a.columns || []).length;
-  if (cols) proj.push(row('Columns', String(cols)));
+  if (cols) proj.push(metricRow('Columns', String(cols)));
   const variants = (a.extracted_variant_paths || []).length;
-  if (variants) proj.push(row('Variant paths', String(variants)));
+  if (variants) proj.push(metricRow('Variant paths', String(variants)));
 
   const group = rowsArr => rowsArr.length ? `<div class="tt-mgroup">${rowsArr.join('')}</div>` : '';
   const metrics = [output, io, prune, proj].map(group).join('');
-
-  // Time-phase breakdown (only when this scan has a recorded share of time).
-  // Percentages are each phase's share of THIS operator's time (they sum to
-  // ~100%); the header states the operator's share of the whole step.
-  let phases = '';
-  if (ov > 0) {
-    for (const [key, cssName, label] of SCAN_PHASES) {
-      const v = op.timeBreakdown?.[key] || 0;
-      if (v <= 0) continue;
-      phases += `<div class="tt-row">
-        <span class="tt-key"><span class="tt-swatch ph-${cssName}"></span>${label}</span>
-        <span class="tt-val">${formatPct(v / ov, 0)}</span></div>`;
-    }
-  }
-  const timeBlock = phases
-    ? `<div class="tt-mgroup"><div class="tt-row tt-muted">${formatPct(ov)} of step time</div>${phases}</div>`
-    : '';
+  const timeBlock = timeGroup(op);
 
   // DATABASE.SCHEMA.TABLE as an aligned identity block — a muted label column
   // and left-aligned values, so the (often long) qualified name reads clearly
@@ -564,6 +579,72 @@ function scanTooltip(op) {
     ${nameBlock}
     ${metrics || '<div class="tt-mgroup"><div class="tt-row tt-muted">No scan metrics recorded</div></div>'}
     ${timeBlock}`;
+}
+
+/** Format a fan-out ratio (output/input): "0.05×", "1.23×", "12×". */
+function formatRatio(r) {
+  if (!isFinite(r)) return '—';
+  return `${r >= 10 ? Math.round(r) : r.toFixed(2)}×`;
+}
+
+/**
+ * HTML for a join node's hover card: the join type + condition, the row flow
+ * (each input side by its feeding operator, then output + fan-out), and the
+ * spill / network / time cost. We deliberately don't guess build vs probe —
+ * Snowflake doesn't mark it — so each input is labelled by its own operator.
+ */
+function joinTooltip(op) {
+  const a = op.attributes || {};
+
+  // Row-flow group: one row per input (labelled by the feeding operator), then
+  // the join's output and the fan-out ratio (output ÷ combined input).
+  const rows = [];
+  const inputs = (childrenMap?.get(op.uid) || [])
+    .map(uid => planProfile?.byId.get(uid))
+    .filter(Boolean);
+  for (const c of inputs) {
+    const label = `${c.type} <span class="tt-dim">op${c.id}</span>`;
+    rows.push(metricRow(label, c.outputRows != null ? formatRows(c.outputRows) : '—'));
+  }
+  if (op.outputRows != null) {
+    rows.push(metricRow('<span class="tt-strong">output</span>',
+      `<span class="tt-strong">${formatRows(op.outputRows)}</span>`));
+    if (op.inputRows) {
+      const r = op.outputRows / op.inputRows;
+      const cls = r >= 10 ? 'c-danger' : r >= 2 ? 'c-warn' : '';
+      rows.push(metricRow('fan-out', formatRatio(r), cls));
+    }
+  }
+
+  // Cost group: spill (the #1 join bottleneck) + network.
+  const cost = [];
+  const spill = op.spilledLocal + op.spilledRemote;
+  if (spill > 0) {
+    const cls = spill >= SPILL_MIN_BYTES ? 'c-danger' : 'c-warn';
+    const remote = op.spilledRemote > 0 ? ` (+${formatBytes(op.spilledRemote)} remote)` : '';
+    cost.push(metricRow('Spill', `${formatBytes(spill)}${remote}`, cls));
+  }
+  if (op.networkBytes > 0) cost.push(metricRow('Network', formatBytes(op.networkBytes)));
+
+  const group = arr => arr.length ? `<div class="tt-mgroup">${arr.join('')}</div>` : '';
+  const body = [group(rows), group(cost), timeGroup(op)].filter(Boolean).join('');
+
+  // Join type as an identity line up top; the (often long) join keys as a
+  // clamped condition block at the bottom — the full text is in click-detail.
+  const typeBlock = a.join_type
+    ? `<div class="tt-idblock"><div class="tt-id"><span class="tt-id-label">type</span>` +
+      `<span class="tt-id-val">${escapeHTML(a.join_type)}</span></div></div>`
+    : '';
+  const cond = a.equality_join_condition || a.additional_join_condition;
+  const condBlock = cond
+    ? `<div class="tt-mgroup"><div class="tt-cond"><span class="tt-cond-label">on</span> ` +
+      `<span class="tt-cond-val">${escapeHTML(cond)}</span></div></div>`
+    : '';
+
+  return `<div class="tt-title">${op.type} <span class="tt-dim">op${op.id}</span></div>
+    ${typeBlock}
+    ${body || '<div class="tt-mgroup"><div class="tt-row tt-muted">No join metrics recorded</div></div>'}
+    ${condBlock}`;
 }
 
 /* ============================================================
